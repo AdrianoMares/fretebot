@@ -27,7 +27,16 @@ function aplicarTaxa(servico, valor) {
 async function getFrete(dados) {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-accelerated-2d-canvas",
+      "--no-first-run",
+      "--no-zygote",
+      "--single-process",
+      "--disable-gpu"
+    ],
   });
 
   const page = await browser.newPage();
@@ -82,18 +91,3 @@ async function getFrete(dados) {
 
   return ajustados;
 }
-
-app.post("/cotacao", async (req, res) => {
-  try {
-    const dados = req.body;
-    const fretes = await getFrete(dados);
-    res.json({ fretes });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ erro: "Falha ao calcular o frete" });
-  }
-});
-
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Servidor rodando na porta 3000");
-});
