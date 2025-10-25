@@ -4,10 +4,6 @@ import cors from "cors";
 import dotenv from "dotenv";
 
 dotenv.config();
-
-// Ativa logs detalhados do Puppeteer
-process.env.DEBUG = "puppeteer:*";
-
 const app = express();
 app.use(express.json());
 app.use(cors());
@@ -33,17 +29,8 @@ async function getFrete(dados) {
   try {
     browser = await puppeteer.launch({
       headless: true,
-      args: [
-        "--no-sandbox",
-        "--disable-setuid-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-accelerated-2d-canvas",
-        "--no-first-run",
-        "--no-zygote",
-        "--single-process",
-        "--disable-gpu",
-        "--remote-debugging-port=9222"
-      ],
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+      executablePath: puppeteer.executablePath(), // força usar Chromium interno
     });
 
     const page = await browser.newPage();
@@ -86,7 +73,7 @@ async function getFrete(dados) {
 
     // AJUSTAR TAXAS
     const ajustados = resultados.map(frete => {
-      let valorNum = parseFloat(frete.valor.replace("R$", "").replace(",", ".").trim()) || 0;
+      let valorNum = parseFloat(frete.valor.replace("R$", "").replace(",", ".").trim());
       return {
         servico: frete.servico,
         valor: aplicarTaxa(frete.servico, valorNum),
@@ -94,13 +81,13 @@ async function getFrete(dados) {
       };
     });
 
-    await browser.close();
     return ajustados;
 
-  } catch (err) {
-    console.error("Erro no Puppeteer:", err);
+  } catch (error) {
+    console.error("Erro no Puppeteer:", error);
+    throw error;
+  } finally {
     if (browser) await browser.close();
-    throw err;
   }
 }
 
@@ -110,12 +97,10 @@ app.post("/cotacao", async (req, res) => {
     const fretes = await getFrete(dados);
     res.json({ fretes });
   } catch (error) {
-    console.error("Erro na cotação:", error);
     res.status(500).json({ erro: "Falha ao calcular o frete" });
   }
 });
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
+app.listen(process.env.PORT || 3000, () => {
+  console.log("Servidor rodando na porta", process.env.PORT || 3000);
 });
