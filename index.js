@@ -1,3 +1,4 @@
+process.env.DEBUG = "puppeteer:*";
 import express from "express";
 import puppeteer from "puppeteer";
 import cors from "cors";
