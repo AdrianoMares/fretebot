@@ -1,25 +1,3 @@
 node_modules
 npm-debug.log
-yarn-error.log
-
-# Logs
-*.log
-logs
-
-# Cache e builds
-.cache
-dist
-build
-tmp
-*.tmp
-
-# Sistema
-.DS_Store
 .env
-.env.local
-.env.production
-.env.development
-
-# Git
-.git
-.gitignore
