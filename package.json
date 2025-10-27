@@ -1,4 +1,17 @@
-"dependencies": {
-  "express": "^4.19.2",
-  "puppeteer-core": "^23.7.0"
+{
+  "name": "fretebot",
+  "version": "1.0.0",
+  "description": "Servidor FreteBot com Browserless",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer-core": "^23.7.0"
+  },
+  "engines": {
+    "node": "22.x"
+  }
 }
