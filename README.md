@@ -1,16 +1,10 @@
-# FreteBot (Browserless)
+# FreteBot (Browserless + Puppeteer)
 
-- Porta: usa `PORT` do ambiente (Render fornece). Default 10000.
-- Env obrigatórios:
-  - `BROWSERLESS_TOKEN`
-  - `POSTAJA_EMAIL`
-  - `POSTAJA_SENHA`
+API que faz login no PostaJá, preenche a calculadora e retorna os valores de frete.
 
-## Endpoint
+## Requisição
 
-POST `/cotacao`
-
-```json
+POST /cotacao (JSON)
 {
   "origem": "29190-014",
   "destino": "01153-000",
@@ -20,17 +14,18 @@ POST `/cotacao`
   "comprimento": 25,
   "valorDeclarado": 100
 }
-```
 
-Resposta:
+## Resposta (exemplo)
 
-```json
 {
   "fretes": [
-    { "servico": "SEDEX", "valor": 22.31, "prazo": "1–3 dias úteis" },
-    { "servico": "PAC", "valor": 19.38, "prazo": "5–7 dias úteis" }
+    { "servico": "SEDEX", "valor": 43.86, "prazo": "4-6 dias úteis" },
+    { "servico": "PAC", "valor": 23.46, "prazo": "8-10 dias úteis" },
+    { "servico": "Pac Mini", "valor": 15.85, "prazo": "11-13 dias úteis" },
+    { "servico": "Jadlog", "valor": 10.18, "prazo": "3-5 dias úteis" }
   ]
 }
-```
 
-> Observação: mapeamento de campos da resposta do backend do Posta Já foi feito de forma robusta, mas se alterarem os nomes/chaves, ajuste a função `mapRespostaPrecoPrazo`.
+## Variáveis de ambiente
+
+POSTAJA_EMAIL, POSTAJA_SENHA, BROWSERLESS_TOKEN e PORT (10000).

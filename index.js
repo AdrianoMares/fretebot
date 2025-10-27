@@ -6,318 +6,265 @@ import puppeteer from "puppeteer-core";
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: "1mb" }));
 app.use(cors());
 
-const PORT = process.env.PORT || 10000;
+// Config
+const PORT = Number(process.env.PORT || 10000);
 const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 const POSTAJA_EMAIL = process.env.POSTAJA_EMAIL || "";
 const POSTAJA_SENHA = process.env.POSTAJA_SENHA || "";
 
-const LOGIN_URL = "https://clubepostaja.com.br/home";
-const CALC_BACK = "https://back.clubepostaja.com.br";
-const OPENCEP = "https://opencep.com.br/v1"; // falls back to .com if needed
-
-// ---- Taxas (percentuais) ----
-const TAXAS = {
-  "SEDEX": 10.5,
-  "PAC": 10.5,
-  "Pac Mini": 10.5,
-  "Jadlog": 70,
-};
-
-function aplicarTaxa(servico, valor) {
-  const taxa = TAXAS[servico] || 0;
-  return Number((valor * (1 + taxa / 100)).toFixed(2));
+if (!BROWSERLESS_TOKEN) {
+  console.warn("[WARN] BROWSERLESS_TOKEN não definido. Configure no Render.");
 }
 
-// cache simples do token em memória (e opcionalmente em /tmp)
-let tokenCache = { token: null, exp: 0 };
-const TOKEN_FILE = "/tmp/fretebot_token.json";
+// simples cache de cookies por processo (reinicia a cada deploy)
+let cookieCache = null;
 
-function loadTokenCache() {
-  try {
-    const raw = require("fs").readFileSync(TOKEN_FILE, "utf8");
-    const parsed = JSON.parse(raw);
-    tokenCache = parsed;
-  } catch {}
-}
-function saveTokenCache() {
-  try {
-    require("fs").writeFileSync(TOKEN_FILE, JSON.stringify(tokenCache));
-  } catch {}
-}
-loadTokenCache();
-
-function decodeJwtExp(jwt) {
-  try {
-    const payload = JSON.parse(Buffer.from(jwt.split(".")[1], "base64").toString("utf8"));
-    return (payload.exp || 0) * 1000;
-  } catch {
-    return 0;
-  }
+/**
+ * Funções utilitárias para seleção robusta
+ */
+async function clickByText(page, tag, text) {
+  const handle = await page.evaluateHandle(
+    (t, txt) => {
+      const elList = Array.from(document.querySelectorAll(t));
+      const found = elList.find(
+        (el) => el.textContent && el.textContent.trim().toLowerCase().includes(txt.toLowerCase())
+      );
+      return found || null;
+    },
+    tag,
+    text
+  );
+  const el = handle.asElement();
+  if (!el) throw new Error(`Elemento <${tag}> com texto contendo "${text}" não encontrado.`);
+  await el.click();
 }
 
-async function typeBy(page, selector, text) {
-  await page.waitForSelector(selector, { visible: true, timeout: 15000 });
-  await page.evaluate((sel) => {
-    const el = document.querySelector(sel);
-    if (el) { el.focus(); el.value = ""; }
-  }, selector);
-  await page.type(selector, text, { delay: 20 });
-}
-
-async function clickButtonByText(page, texts = ["Entrar", "Acessar", "Login"]) {
-  await page.waitForSelector("button", { timeout: 15000 });
-  const clicked = await page.evaluate((btnTexts) => {
-    const norm = (s) => (s || "").trim().toLowerCase();
-    const buttons = Array.from(document.querySelectorAll("button"));
-    for (const t of btnTexts) {
-      const match = buttons.find(b => norm(b.innerText).includes(norm(t)));
-      if (match) { match.click(); return true; }
-    }
-    // fallback: submit first form
-    const form = document.querySelector("form");
-    if (form) { form.submit(); return true; }
-    return false;
-  }, texts);
-  if (!clicked) throw new Error("Não foi possível clicar no botão de login.");
-}
-
-async function browserConnect() {
-  if (!BROWSERLESS_TOKEN) {
-    throw new Error("Defina BROWSERLESS_TOKEN nos envs do Render.");
-  }
-  const browser = await puppeteer.connect({
-    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_TOKEN}`,
-  });
-  return browser;
-}
-
-// Tenta descobrir um JWT válido no localStorage após login
-async function extractJwtFromLocalStorage(page) {
-  return await page.evaluate(() => {
-    const results = [];
-    for (let i = 0; i < localStorage.length; i++) {
-      const k = localStorage.key(i);
-      const val = localStorage.getItem(k) || "";
-      // Heurística simples para JWT: contém 2 pontos.
-      if (val.includes(".") && val.split(".").length === 3) {
-        results.push(val);
-      }
-    }
-    return results[0] || null;
-  });
+async function typeByPlaceholderContains(page, containsText, value) {
+  const handle = await page.evaluateHandle((txt) => {
+    const inputs = Array.from(document.querySelectorAll("input"));
+    const target = inputs.find((i) => {
+      const ph = (i.getAttribute("placeholder") || "").toLowerCase();
+      return ph.includes(txt.toLowerCase());
+    });
+    return target || null;
+  }, containsText);
+  const el = handle.asElement();
+  if (!el) throw new Error(`Input com placeholder contendo "${containsText}" não encontrado.`);
+  await el.type(value, { delay: 15 });
 }
 
 async function ensureLogged(page) {
-  const now = Date.now();
-  if (tokenCache.token && tokenCache.exp > now + 60_000) {
-    return tokenCache.token;
-  }
-
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle2", timeout: 60000 });
-
-  // Se já estiver logado, possivelmente não há inputs de email/senha
-  const hasEmailInput = await page.$('input[type="email"], input[name="email"]');
-  const hasPasswordInput = await page.$('input[type="password"], input[name="password"]');
-
-  if (hasEmailInput && hasPasswordInput) {
-    if (!POSTAJA_EMAIL || !POSTAJA_SENHA) {
-      throw new Error("POSTAJA_EMAIL e POSTAJA_SENHA precisam estar definidos nos envs.");
-    }
-    await typeBy(page, 'input[type="email"], input[name="email"]', POSTAJA_EMAIL);
-    await typeBy(page, 'input[type="password"], input[name="password"]', POSTAJA_SENHA);
-    await clickButtonByText(page);
-    // aguarda a aplicação inicializar após login
-    await page.waitForTimeout(2500);
-  }
-
-  // tenta obter o JWT que a SPA usa para o back.clubepostaja.com.br
-  const jwt = await extractJwtFromLocalStorage(page);
-  if (!jwt) {
-    // alguns apps armazenam token em sessionStorage
-    const sessionJwt = await page.evaluate(() => {
-      const results = [];
-      for (let i = 0; i < sessionStorage.length; i++) {
-        const k = sessionStorage.key(i);
-        const val = sessionStorage.getItem(k) || "";
-        if (val.includes(".") && val.split(".").length === 3) results.push(val);
-      }
-      return results[0] || null;
-    });
-    if (!sessionJwt) throw new Error("Não foi possível capturar o token JWT após o login.");
-    tokenCache.token = sessionJwt;
-    tokenCache.exp = decodeJwtExp(sessionJwt);
-    saveTokenCache();
-    return sessionJwt;
-  } else {
-    tokenCache.token = jwt;
-    tokenCache.exp = decodeJwtExp(jwt);
-    saveTokenCache();
-    return jwt;
-  }
-}
-
-async function getEnderecoByCEP(cep) {
-  // remove hifen
-  const digits = (cep || "").replace(/\D/g, "");
-  const urls = [
-    `https://opencep.com.br/v1/${digits}`,
-    `https://opencep.com/v1/${digits}`,
-  ];
-  for (const u of urls) {
+  // Se já tem cookies válidos, injeta e tenta abrir /home direto
+  if (cookieCache) {
     try {
-      const resp = await fetch(u);
-      if (resp.ok) {
-        const j = await resp.json();
-        return {
-          logradouro: j.logradouro || "",
-          bairro: j.bairro || "",
-          cidade: j.localidade || j.cidade || "",
-          uf: j.uf || "",
-          cep: j.cep || cep,
-        };
-      }
-    } catch {}
+      await page.setCookie(...cookieCache);
+      await page.goto("https://clubepostaja.com.br/home", { waitUntil: "networkidle2" });
+      // se carregou o menu lateral, assumimos logado
+      const logged = await page.evaluate(() => !!document.querySelector('a[href="/calculadora"]') || !!document.body.innerText.includes("Calculadora"));
+      if (logged) return true;
+    } catch (_) {}
   }
-  // fallback mínimo
-  return { logradouro: "", bairro: "", cidade: "", uf: "", cep };
+
+  // Faz login manual (como usuário)
+  await page.goto("https://clubepostaja.com.br/home", { waitUntil: "networkidle2" });
+  // Alguns tenants mostram o formulário de login nesta própria URL
+  // Localiza os dois campos pelo placeholder
+  await typeByPlaceholderContains(page, "e-mail", POSTAJA_EMAIL);
+  await typeByPlaceholderContains(page, "senha", POSTAJA_SENHA);
+
+  // Botão "ACESSAR"
+  await clickByText(page, "button", "acessar");
+
+  // Aguarda redirecionar para home autenticada
+  await page.waitForNavigation({ waitUntil: "networkidle2", timeout: 60000 });
+
+  // Armazena cookies na memória para próximas requisições
+  cookieCache = await page.cookies();
+  return true;
 }
 
-function kgToGrams(kg) {
-  const num = Number(kg || 0);
-  return Math.max(1, Math.round(num * 1000));
+function parseMoneyToNumber(text) {
+  if (!text) return 0;
+  const raw = text.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+  const n = Number(raw);
+  return Number.isFinite(n) ? Number(n.toFixed(2)) : 0;
 }
 
-// Mapeia a resposta do backend no formato desejado
-function mapRespostaPrecoPrazo(respJson) {
-  // Tentamos cobrir formatos prováveis.
-  // Ex.: [{nome:'SEDEX', valor: 10.5, prazo: '1-3 dias'}]
-  const out = [];
+/**
+ * Extrai cards de preço/prazo na calculadora-completa
+ */
+async function scrapeCards(page) {
+  // Espera os cards aparecerem
+  await page.waitForSelector("body", { timeout: 60000 });
 
-  const addItem = (servico, preco, prazo) => {
-    if (!servico) return;
-    const valorNum = Number(preco) || 0;
-    out.push({
-      servico,
-      valor: aplicarTaxa(servico, valorNum),
-      prazo: prazo || "",
+  const items = await page.evaluate(() => {
+    // Cada card costuma ter um preço com "R$" e um bloco de prazo "dias úteis".
+    const candidates = Array.from(document.querySelectorAll("div, article, section"));
+    const cards = candidates.filter((el) => {
+      const t = (el.textContent || "").toLowerCase();
+      return t.includes("dias úteis") && t.includes("r$");
     });
-  };
 
-  if (Array.isArray(respJson)) {
-    for (const it of respJson) {
-      const nome = it.servico || it.nome || it.descricao || it.carrier || it.sigla || "";
-      const valor = it.preco || it.valor || it.price || it.total || 0;
-      const prazo = it.prazo || it.prazoEntrega || it.leadtime || it.delivery || "";
-      addItem(nome, valor, prazo);
-    }
-  } else if (respJson && typeof respJson === "object") {
-    const keys = Object.keys(respJson);
-    for (const k of keys) {
-      const it = respJson[k];
-      if (it && typeof it === "object") {
-        const nome = it.servico || it.nome || k;
-        const valor = it.preco || it.valor || 0;
-        const prazo = it.prazo || it.prazoEntrega || "";
-        addItem(nome, valor, prazo);
+    // Função auxiliar para identificar serviço pelo texto e imagens
+    const serviceNameFrom = (el) => {
+      const txt = (el.textContent || "").toLowerCase();
+      const alts = Array.from(el.querySelectorAll("img"))
+        .map((i) => (i.getAttribute("alt") || "").trim().toLowerCase())
+        .filter(Boolean);
+
+      let name = "";
+
+      if (alts.some((a) => a.includes("sedex"))) name = "SEDEX";
+      else if (alts.some((a) => a.includes("pac"))) name = "PAC";
+      else if (alts.some((a) => a.includes("mini"))) name = "Pac Mini";
+      else if (alts.some((a) => a.includes("jadlog"))) name = "Jadlog";
+      else if (alts.some((a) => a.includes("loggi"))) name = "Loggi";
+
+      if (!name) {
+        if (txt.includes("sedex")) name = "SEDEX";
+        else if (txt.includes("pac ")) name = "PAC";
+        else if (txt.includes("mini")) name = "Pac Mini";
+        else if (txt.includes("jadlog")) name = "Jadlog";
+        else if (txt.includes("loggi")) name = "Loggi";
+      }
+      return name || "Desconhecido";
+    };
+
+    const prazoFrom = (el) => {
+      const m = (el.textContent || "").match(/(\d+\s*[-–]\s*\d+|\d+)\s*dias?\s*úteis/iu);
+      return m ? m[0].replace(/\s+/g, " ").trim() : "";
+    };
+
+    const precoFrom = (el) => {
+      const m = (el.textContent || "").match(/R\$\s*[\d\.\,]+/iu);
+      return m ? m[0] : "";
+    };
+
+    const uniq = [];
+    cards.forEach((el) => {
+      const s = serviceNameFrom(el);
+      const pz = prazoFrom(el);
+      const pr = precoFrom(el);
+      if (pr && pz) {
+        uniq.push({ servico: s, prazo: pz, valorStr: pr });
+      }
+    });
+
+    // Dedup por (servico,prazo,valorStr)
+    const keyset = new Set();
+    const out = [];
+    for (const it of uniq) {
+      const k = `${it.servico}|${it.prazo}|${it.valorStr}`;
+      if (!keyset.has(k)) {
+        keyset.add(k);
+        out.push(it);
       }
     }
-  }
+    return out;
+  });
 
-  // Ordena por valor ascendente
-  out.sort((a, b) => a.valor - b.valor);
-  return out;
+  // Normaliza valores
+  const normalized = items.map((it) => ({
+    servico: it.servico,
+    prazo: it.prazo,
+    valor: parseMoneyToNumber(it.valorStr),
+  })).filter((x) => x.valor > 0 && x.prazo);
+
+  // Mantém somente serviços de interesse e ordena por valor
+  const preferredOrder = ["SEDEX", "PAC", "Pac Mini", "Jadlog", "Loggi"];
+  normalized.sort((a, b) => a.valor - b.valor);
+  // ordena dentro do mesmo nome pela ordem preferida
+  normalized.sort((a, b) => preferredOrder.indexOf(a.servico) - preferredOrder.indexOf(b.servico));
+
+  return normalized;
 }
 
-async function cotarViaBackend(page, jwt, dados) {
-  // Consulta CEP para remetente/destinatário como a SPA faz
-  const remetente = await getEnderecoByCEP(dados.origem);
-  const destinatario = await getEnderecoByCEP(dados.destino);
-
-  // Alguns serviços padrão (podemos ajustar depois com valores reais)
-  const servicos = ["03220", "03298", "04227", ".package", "economico"];
-
-  // Backend do Posta Já recebe unidades em gramas e cm na maioria dos casos
-  const params = new URLSearchParams({
-    cepOrigem: dados.origem,
-    cepDestino: dados.destino,
-    altura: String(dados.altura ?? 1),
-    largura: String(dados.largura ?? 1),
-    comprimento: String(dados.comprimento ?? 1),
-    peso: String(kgToGrams(dados.peso ?? 0.3)), // 0.3kg default
-    valorDeclarado: (Number(dados.valorDeclarado || 0)).toFixed(2),
-    codigoServico: "",
-    prazo: "0",
-    prazoFinal: "0",
-    valor: "0",
-    quantidade: "1",
-    logisticaReversa: "false",
-    "remetente[logradouro]": remetente.logradouro,
-    "remetente[cep]": remetente.cep,
-    "remetente[cidade]": remetente.cidade,
-    "remetente[bairro]": remetente.bairro,
-    "remetente[uf]": remetente.uf,
-    "remetente[complemento]": "",
-    "destinatario[logradouro]": destinatario.logradouro,
-    "destinatario[cep]": destinatario.cep,
-    "destinatario[cidade]": destinatario.cidade,
-    "destinatario[bairro]": destinatario.bairro,
-    "destinatario[uf]": destinatario.uf,
-    "destinatario[complemento]": "",
-    tipoEmbalagem: "1",
-    tipo: "2",
-  });
-  for (const s of servicos) params.append("servicos[]", s);
-
-  // Faz a chamada ao backend usando fetch do Node (sem CORS) com o JWT da sessão
-  const url = `${CALC_BACK}/preco-prazo?${params.toString()}`;
-  const resp = await fetch(url, {
-    headers: {
-      "Authorization": `Bearer ${jwt}`,
-      "Accept": "application/json, text/plain, */*",
-    }
-  });
-  if (!resp.ok) {
-    const t = await resp.text();
-    throw new Error(`preco-prazo falhou (${resp.status}): ${t.slice(0,200)}`);
-  }
-  const json = await resp.json();
-  return mapRespostaPrecoPrazo(json);
-}
-
+/**
+ * Fluxo principal de cotação
+ */
 async function getFrete(dados) {
-  let browser;
-  try {
-    browser = await browserConnect();
-    const page = await browser.newPage();
-    page.setDefaultTimeout(60000);
-    page.setDefaultNavigationTimeout(60000);
+  const browser = await puppeteer.connect({
+    browserWSEndpoint: `wss://production-sfo.browserless.io?token=${BROWSERLESS_TOKEN}`,
+  });
 
-    const jwt = await ensureLogged(page);
-    const fretes = await cotarViaBackend(page, jwt, dados);
-    await browser.close();
+  try {
+    const page = await browser.newPage();
+    page.setDefaultNavigationTimeout(90000);
+
+    // 1) garantir login
+    await ensureLogged(page);
+
+    // 2) ir à calculadora
+    await page.goto("https://clubepostaja.com.br/calculadora", { waitUntil: "networkidle2" });
+
+    // 3) preencher campos (por placeholder/labels)
+    const fillByIdOrPlaceholder = async (id, phContains, value) => {
+      // tenta por id
+      let ok = false;
+      if (id) {
+        const byId = await page.$(`#${id}`);
+        if (byId) {
+          await byId.click({ clickCount: 3 });
+          await byId.type(String(value), { delay: 15 });
+          ok = true;
+        }
+      }
+      if (!ok) {
+        await typeByPlaceholderContains(page, phContains, String(value));
+      }
+    };
+
+    await fillByIdOrPlaceholder(null, "CEP de origem", dados.origem);
+    await fillByIdOrPlaceholder(null, "CEP de destino", dados.destino);
+    await fillByIdOrPlaceholder(null, "Altura", dados.altura);
+    await fillByIdOrPlaceholder(null, "Largura", dados.largura);
+    await fillByIdOrPlaceholder(null, "Compr", dados.comprimento);
+    // Peso na UI aparenta ser em gramas; se vier em kg, converter
+    const pesoGramas = dados.peso > 10 ? dados.peso : Math.round(Number(dados.peso) * 1000);
+    await fillByIdOrPlaceholder(null, "Peso", pesoGramas);
+    await fillByIdOrPlaceholder(null, "Valor declarado", (dados.valorDeclarado || 0).toFixed(2));
+
+    // 4) clicar em "CALCULAR FRETE"
+    await clickByText(page, "button", "CALCULAR FRETE");
+
+    // 5) aguardar navegação/resultado
+    await page.waitForFunction(
+      () => location.href.includes("calculadora-completa"),
+      { timeout: 60000 }
+    ).catch(async () => {
+      // alguns fluxos atualizam via ajax, então só espera surgir os cards
+      await page.waitForSelector("body", { timeout: 60000 });
+    });
+
+    // 6) extrair cards
+    const fretes = await scrapeCards(page);
+
     return fretes;
-  } catch (err) {
-    if (browser) await browser.close();
-    throw err;
+  } finally {
+    await browser.close();
   }
 }
 
 app.get("/", (_req, res) => {
-  res.send("FreteBot online (Browserless).");
+  res.send("FreteBot ok");
 });
 
 app.post("/cotacao", async (req, res) => {
   try {
-    const dados = req.body;
+    const dados = req.body || {};
     const obrig = ["origem", "destino", "peso", "largura", "altura", "comprimento"];
-    const faltando = obrig.filter(k => !(k in dados));
-    if (faltando.length) {
-      return res.status(400).json({ erro: `Campos obrigatórios ausentes: ${faltando.join(", ")}` });
+    for (const f of obrig) {
+      if (dados[f] === undefined || dados[f] === null || dados[f] === "") {
+        return res.status(400).json({ erro: `Campo obrigatório: ${f}` });
+      }
     }
+
     const fretes = await getFrete(dados);
+
+    // filtra e formata na resposta desejada
     res.json({ fretes });
   } catch (err) {
     console.error("Erro na cotação:", err);
@@ -325,9 +272,6 @@ app.post("/cotacao", async (req, res) => {
   }
 });
 
-app.get("/healthz", (_req, res) => res.send("ok"));
-
-// Render usa a variável de ambiente PORT. Mantemos 10000 como default.
 app.listen(PORT, () => {
   console.log(`Servidor rodando na porta ${PORT}`);
 });
