@@ -1,50 +1,64 @@
-import express from 'express';
-import cors from 'cors';
-import puppeteer from 'puppeteer';
-import dotenv from 'dotenv';
+import express from "express";
+import cors from "cors";
+import puppeteer from "puppeteer";
+import dotenv from "dotenv";
 
 dotenv.config();
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
-
-// Função principal de cálculo de frete
-async function getFrete({ cepOrigem, cepDestino, peso, altura, largura, comprimento }) {
+// Função principal de cotação
+async function getFrete(dados) {
   const browser = await puppeteer.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
 
-  const page = await browser.newPage();
   try {
-    await page.goto('https://www.clubepostaja.com.br/cotacao', { waitUntil: 'networkidle2' });
-    // A partir daqui você pode preencher os campos e extrair os dados da página
-    await page.waitForTimeout(1000);
+    const page = await browser.newPage();
+    await page.goto("https://clubepostaja.com.br/", { waitUntil: "networkidle2" });
 
-    const resultado = { valor: 'R$ 29,90', prazo: '3 dias úteis' };
-    await browser.close();
+    // simulação de preenchimento do formulário
+    await page.waitForSelector("input[name='cep_origem']");
+    await page.type("input[name='cep_origem']", dados.cep_origem);
+    await page.type("input[name='cep_destino']", dados.cep_destino);
+    await page.type("input[name='peso']", dados.peso);
+
+    await page.click("button[type='submit']");
+    await page.waitForSelector(".resultado", { timeout: 20000 });
+
+    const resultado = await page.evaluate(() => {
+      const resultados = Array.from(document.querySelectorAll(".resultado"));
+      return resultados.map(el => el.textContent.trim());
+    });
+
     return resultado;
-  } catch (error) {
+  } catch (err) {
+    console.error("Erro no Puppeteer:", err);
+    throw err;
+  } finally {
     await browser.close();
-    console.error('Erro no Puppeteer:', error);
-    throw error;
   }
 }
 
-// Endpoint de cálculo
-app.post('/calcular', async (req, res) => {
+// 🟢 Rota de teste GET
+app.get("/", (req, res) => {
+  res.json({ status: "Servidor FreteBot ativo!" });
+});
+
+// 🟢 Rota principal de cotação
+app.post("/cotacao", async (req, res) => {
   try {
     const dados = req.body;
     const resultado = await getFrete(dados);
-    res.json(resultado);
-  } catch (error) {
-    console.error('Erro na cotação:', error);
-    res.status(500).json({ erro: 'Erro ao calcular o frete.' });
+    res.json({ sucesso: true, resultado });
+  } catch (err) {
+    res.status(500).json({ sucesso: false, erro: err.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Servidor rodando na porta ${PORT}`);
-});
+// Porta Render
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
