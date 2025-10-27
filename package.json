@@ -1,14 +1,18 @@
 {
   "name": "fretebot",
   "version": "1.0.0",
-  "description": "Servidor de automação de cotações no Clube Posta Já",
-  "main": "index.js",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "engines": {
+    "node": ">=20 <23"
+  },
   "dependencies": {
-    "express": "^4.18.2",
-    "puppeteer-core": "^22.7.1"
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "puppeteer-core": "^22.15.0"
   }
 }
