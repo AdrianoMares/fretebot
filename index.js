@@ -1,52 +1,50 @@
 import express from 'express';
+import cors from 'cors';
 import puppeteer from 'puppeteer';
+import dotenv from 'dotenv';
 
+dotenv.config();
 const app = express();
+app.use(cors());
 app.use(express.json());
 
-let processing = false;
+const PORT = process.env.PORT || 10000;
 
-async function getFrete(data) {
-  let browser;
+// Função principal de cálculo de frete
+async function getFrete({ cepOrigem, cepDestino, peso, altura, largura, comprimento }) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
+
+  const page = await browser.newPage();
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      executablePath: '/usr/bin/chromium',
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-gpu',
-        '--disable-dev-shm-usage',
-        '--single-process',
-        '--no-zygote'
-      ]
-    });
-    const page = await browser.newPage();
-    await page.goto('https://www.google.com');
-    await page.waitForTimeout(2000);
-    return { status: 'OK', message: 'Teste de Puppeteer bem-sucedido!' };
+    await page.goto('https://www.clubepostaja.com.br/cotacao', { waitUntil: 'networkidle2' });
+    // A partir daqui você pode preencher os campos e extrair os dados da página
+    await page.waitForTimeout(1000);
+
+    const resultado = { valor: 'R$ 29,90', prazo: '3 dias úteis' };
+    await browser.close();
+    return resultado;
   } catch (error) {
+    await browser.close();
     console.error('Erro no Puppeteer:', error);
-    return { status: 'ERRO', message: error.message };
-  } finally {
-    if (browser) await browser.close();
+    throw error;
   }
 }
 
-app.post('/cotacao', async (req, res) => {
-  if (processing) {
-    return res.status(429).json({ erro: 'Servidor ocupado, tente novamente em alguns segundos' });
-  }
-  processing = true;
+// Endpoint de cálculo
+app.post('/calcular', async (req, res) => {
   try {
-    const result = await getFrete(req.body);
-    res.json(result);
-  } catch (err) {
-    res.status(500).json({ erro: err.message });
-  } finally {
-    processing = false;
+    const dados = req.body;
+    const resultado = await getFrete(dados);
+    res.json(resultado);
+  } catch (error) {
+    console.error('Erro na cotação:', error);
+    res.status(500).json({ erro: 'Erro ao calcular o frete.' });
   }
 });
 
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
