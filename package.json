@@ -1,17 +1,16 @@
 {
   "name": "fretebot",
   "version": "1.0.0",
-  "description": "Servidor para calcular fretes via Clube PostaJá e retornar JSON para o FreteAZ",
+  "description": "Servidor FreteBot",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "puppeteer": "^23.3.0",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.1"
+    "dotenv": "^16.4.1",
+    "puppeteer": "^23.4.0"
   }
 }
