@@ -14,7 +14,7 @@ const BROWSERLESS_TOKEN = process.env.BROWSERLESS_TOKEN;
 const POSTAJA_EMAIL = process.env.POSTAJA_EMAIL;
 const POSTAJA_SENHA = process.env.POSTAJA_SENHA;
 
-const LOGIN_URL = "https://clubepostaja.com.br/";
+const LOGIN_URL = "https://clubepostaja.com.br/home";
 const CALC_URL = "https://clubepostaja.com.br/calculadora";
 const RESULT_URL = "https://clubepostaja.com.br/calculadora-completa";
 
