@@ -10,7 +10,6 @@ app.use(cors());
 
 const loginURL = "https://clubepostaja.com.br/";
 const calcURL = "https://clubepostaja.com.br/calculadora";
-const resultURL = "https://clubepostaja.com.br/calculadora-completa";
 
 const TAXAS = {
   "SEDEX": 10.5,
@@ -30,7 +29,7 @@ async function getFrete(dados) {
     browser = await puppeteer.launch({
       headless: true,
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
-      executablePath: puppeteer.executablePath(), // força usar Chromium interno
+      executablePath: puppeteer.executablePath() // usa o Chrome baixado
     });
 
     const page = await browser.newPage();
@@ -62,17 +61,15 @@ async function getFrete(dados) {
 
     // PEGAR RESULTADOS
     const resultados = await page.evaluate(() => {
-      const linhas = Array.from(document.querySelectorAll(".resultado-item"));
-      return linhas.map(linha => {
-        const servico = linha.querySelector(".nome-servico")?.innerText || "";
-        const valor = linha.querySelector(".valor-frete")?.innerText || "";
-        const prazo = linha.querySelector(".prazo-entrega")?.innerText || "";
-        return { servico, valor, prazo };
-      });
+      return Array.from(document.querySelectorAll(".resultado-item")).map(linha => ({
+        servico: linha.querySelector(".nome-servico")?.innerText || "",
+        valor: linha.querySelector(".valor-frete")?.innerText || "",
+        prazo: linha.querySelector(".prazo-entrega")?.innerText || ""
+      }));
     });
 
     // AJUSTAR TAXAS
-    const ajustados = resultados.map(frete => {
+    return resultados.map(frete => {
       let valorNum = parseFloat(frete.valor.replace("R$", "").replace(",", ".").trim());
       return {
         servico: frete.servico,
@@ -81,11 +78,9 @@ async function getFrete(dados) {
       };
     });
 
-    return ajustados;
-
-  } catch (error) {
-    console.error("Erro no Puppeteer:", error);
-    throw error;
+  } catch (err) {
+    console.error("Erro no Puppeteer:", err);
+    throw err;
   } finally {
     if (browser) await browser.close();
   }
@@ -93,14 +88,12 @@ async function getFrete(dados) {
 
 app.post("/cotacao", async (req, res) => {
   try {
-    const dados = req.body;
-    const fretes = await getFrete(dados);
+    const fretes = await getFrete(req.body);
     res.json({ fretes });
-  } catch (error) {
+  } catch (err) {
     res.status(500).json({ erro: "Falha ao calcular o frete" });
   }
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log("Servidor rodando na porta", process.env.PORT || 3000);
-});
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log("Servidor rodando na porta", PORT));
