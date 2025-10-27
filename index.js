@@ -1,64 +1,71 @@
 import express from "express";
 import cors from "cors";
+import bodyParser from "body-parser";
 import puppeteer from "puppeteer";
-import dotenv from "dotenv";
-
-dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 10000;
+
 app.use(cors());
-app.use(express.json());
+app.use(bodyParser.json());
 
-// Função principal de cotação
-async function getFrete(dados) {
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
-
+// Função de cotação usando Puppeteer
+async function getFrete(origem, destino, peso) {
+  let browser;
   try {
-    const page = await browser.newPage();
-    await page.goto("https://clubepostaja.com.br/", { waitUntil: "networkidle2" });
-
-    // simulação de preenchimento do formulário
-    await page.waitForSelector("input[name='cep_origem']");
-    await page.type("input[name='cep_origem']", dados.cep_origem);
-    await page.type("input[name='cep_destino']", dados.cep_destino);
-    await page.type("input[name='peso']", dados.peso);
-
-    await page.click("button[type='submit']");
-    await page.waitForSelector(".resultado", { timeout: 20000 });
-
-    const resultado = await page.evaluate(() => {
-      const resultados = Array.from(document.querySelectorAll(".resultado"));
-      return resultados.map(el => el.textContent.trim());
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--disable-accelerated-2d-canvas",
+        "--no-zygote",
+        "--single-process"
+      ]
     });
 
-    return resultado;
+    const page = await browser.newPage();
+    await page.goto("https://www.exemplo-cotacao.com.br", { waitUntil: "networkidle2" });
+
+    // Exemplo de preenchimento de formulário
+    await page.type("#origem", origem);
+    await page.type("#destino", destino);
+    await page.type("#peso", peso.toString());
+    await page.click("#calcular");
+
+    await page.waitForSelector("#resultado"); // Aguarda resultado
+    const resultado = await page.$eval("#resultado", el => el.textContent.trim());
+
+    return { sucesso: true, valor: resultado };
   } catch (err) {
-    console.error("Erro no Puppeteer:", err);
-    throw err;
+    console.error("Erro no Puppeteer:", err.message);
+    return { sucesso: false, erro: err.message };
   } finally {
-    await browser.close();
+    if (browser) await browser.close();
   }
 }
 
-// 🟢 Rota de teste GET
-app.get("/", (req, res) => {
-  res.json({ status: "Servidor FreteBot ativo!" });
-});
-
-// 🟢 Rota principal de cotação
+// Endpoint POST /cotacao
 app.post("/cotacao", async (req, res) => {
-  try {
-    const dados = req.body;
-    const resultado = await getFrete(dados);
-    res.json({ sucesso: true, resultado });
-  } catch (err) {
-    res.status(500).json({ sucesso: false, erro: err.message });
+  const { origem, destino, peso } = req.body;
+
+  if (!origem || !destino || !peso) {
+    return res.status(400).json({ sucesso: false, erro: "Parâmetros inválidos" });
   }
+
+  const cotacao = await getFrete(origem, destino, peso);
+  if (!cotacao.sucesso) return res.status(500).json(cotacao);
+
+  res.json(cotacao);
 });
 
-// Porta Render
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+// Root endpoint
+app.get("/", (req, res) => {
+  res.send("Servidor FreteBot rodando!");
+});
+
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+});
