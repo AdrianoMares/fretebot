@@ -138,10 +138,10 @@ async function scrapeCards(page) {
       return m ? m[0].replace(/\s+/g, " ").trim() : "";
     };
 
-    const precoFrom = (el) => {
-      const m = (el.textContent || "").match(/R\$\s*[\d\.\,]+/iu);
-      return m ? m[0] : "";
-    };
+   const precoFrom = (el) => {
+  const m = (el.textContent || "").match(/R\$\s*[\d.,]+/iu);
+  return m ? m[0] : "";
+};
 
     const uniq = [];
     cards.forEach((el) => {
