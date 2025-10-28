@@ -1,10 +1,30 @@
-# FreteBot (Browserless + Puppeteer)
+# 🚀 FreteBot (Render - Puppeteer Local)
 
-API que faz login no PostaJá, preenche a calculadora e retorna os valores de frete.
+Servidor Node.js para calcular fretes automaticamente no site Clube PostaJá.
 
-## Requisição
+## ⚙️ Configuração
 
-POST /cotacao (JSON)
+### Variáveis de ambiente (Render)
+```
+POSTAJA_EMAIL=seu@email.com
+POSTAJA_SENHA=sua_senha
+PORT=10000
+PUPPETEER_SKIP_DOWNLOAD=false
+```
+
+### Deploy no Render
+1. Suba os arquivos no GitHub.
+2. Crie um novo serviço **Web Service** no Render.
+3. Configure o **Start Command** como:
+   ```bash
+   npm start
+   ```
+4. O Render instalará o Chrome automaticamente durante o build.
+
+---
+**Endpoint:** `POST /cotacao`  
+**Exemplo JSON:**
+```json
 {
   "origem": "29190-014",
   "destino": "01153-000",
@@ -14,18 +34,7 @@ POST /cotacao (JSON)
   "comprimento": 25,
   "valorDeclarado": 100
 }
+```
 
-## Resposta (exemplo)
-
-{
-  "fretes": [
-    { "servico": "SEDEX", "valor": 43.86, "prazo": "4-6 dias úteis" },
-    { "servico": "PAC", "valor": 23.46, "prazo": "8-10 dias úteis" },
-    { "servico": "Pac Mini", "valor": 15.85, "prazo": "11-13 dias úteis" },
-    { "servico": "Jadlog", "valor": 10.18, "prazo": "3-5 dias úteis" }
-  ]
-}
-
-## Variáveis de ambiente
-
-POSTAJA_EMAIL, POSTAJA_SENHA, BROWSERLESS_TOKEN e PORT (10000).
+---
+© 2025 FreteBot - Render Puppeteer Local
