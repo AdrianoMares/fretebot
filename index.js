@@ -1,133 +1,75 @@
 import express from 'express';
 import axios from 'axios';
-import dotenv from 'dotenv';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { readToken, writeToken } from './tokenCache.js';
-import { createRateLimiter } from './rateLimiter.js';
-import { fetchCEP } from './opencep.js';
+import fs from 'fs';
 
-dotenv.config();
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const PORT = Number(process.env.PORT || 10000);
-const BACK_BASE = (process.env.BACK_BASE || 'https://back.clubepostaja.com.br').replace(/\/$/, '');
-const PJ_EMAIL = process.env.PJ_EMAIL || '';
-const PJ_SENHA = process.env.PJ_SENHA || '';
-const TOKEN_CACHE = process.env.TOKEN_CACHE || path.join(__dirname, 'token-cache.json');
-const RATE_MIN_INTERVAL_MS = Number(process.env.RATE_MIN_INTERVAL_MS || 1000);
-
-const limiter = createRateLimiter(RATE_MIN_INTERVAL_MS);
 const app = express();
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json());
 
-function extractToken(data) {
-  if (!data) return null;
-  return data.token || data.access_token || data.jwt || data?.data?.token || null;
-}
+const PORT = process.env.PORT || 10000;
+const LOGIN_URL = 'https://back.clubepostaja.com.br/auth/login';
+const FRETE_URL = 'https://back.clubepostaja.com.br/preco-prazo';
+const CACHE_FILE = './tokenCache.json';
 
-async function login(force = false) {
-  console.log('🔐 Fazendo login via HTTP...');
-  if (!force) {
-    const cached = await readToken(TOKEN_CACHE);
-    if (cached?.token) {
-      console.log('✅ Token carregado do cache');
-      return cached.token;
+// Função para obter o token do cache ou fazer login
+async function getToken() {
+  if (fs.existsSync(CACHE_FILE)) {
+    const cache = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf-8'));
+    if (cache.token && Date.now() < cache.expireAt) {
+      console.log('✅ Token em cache válido');
+      return cache.token;
     }
   }
-  const url = `${BACK_BASE}/auth/login`;
-  const { data } = await limiter.schedule(() =>
-    axios.post(url, { email: PJ_EMAIL, senha: PJ_SENHA }, { headers: { 'Content-Type': 'application/json' }, timeout: 20000 })
-  );
-  const token = extractToken(data);
-  if (!token) throw new Error('Token não retornado no login');
-  let exp = null;
-  try {
-    const [, payloadB64] = token.split('.');
-    const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf-8'));
-    exp = payload?.exp;
-  } catch {}
-  await writeToken(TOKEN_CACHE, { token, exp, at: Date.now() });
-  console.log('🔑 Token salvo em cache');
+
+  console.log('🔐 Gerando novo token...');
+  const response = await axios.post(LOGIN_URL, {
+    usuario: process.env.POSTAJA_USER,
+    senha: process.env.POSTAJA_PASS
+  }, {
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const token = response.data.token;
+  const expireAt = Date.now() + 1000 * 60 * 60 * 4; // 4h
+  fs.writeFileSync(CACHE_FILE, JSON.stringify({ token, expireAt }));
+  console.log('✅ Novo token salvo em cache');
   return token;
 }
 
-function normalizeServicos(input) {
-  if (Array.isArray(input)) return input;
-  if (typeof input === 'string') return input.split(',').map(s => s.trim()).filter(Boolean);
-  return ['03220', '03298', '04227', '.package', 'economico'];
-}
-
-function toGramas(peso) {
-  const n = Number(peso);
-  if (n <= 10) return Math.round(n * 1000);
-  return Math.round(n);
-}
-
-function buildPayload(base, rem, des, servicos, usuario) {
-  return {
-    usuario,
-    cepOrigem: base.origem,
-    cepDestino: base.destino,
-    altura: base.altura || 2,
-    largura: base.largura || 12,
-    comprimento: base.comprimento || 16,
-    peso: toGramas(base.peso),
-    valorDeclarado: Number(base.valorDeclarado || 0).toFixed(2),
-    codigoServico: '',
-    prazo: 0,
-    prazoFinal: 0,
-    valor: 0,
-    quantidade: 1,
-    logisticaReversa: false,
-    remetente: rem,
-    destinatario: des,
-    tipoEmbalagem: 1,
-    tipo: 2,
-    servicos
-  };
-}
-
-function normalizeResponse(data) {
-  const arr = Array.isArray(data) ? data : data?.resultados || data?.cotacoes || data?.data || [];
-  if (!Array.isArray(arr)) return [{ raw: data }];
-  return arr.map(x => ({
-    servico: x.servico || x.codigoServico || x.nome || 'desconhecido',
-    valor: Number(x.valor || x.preco || x.price || 0),
-    prazo: x.prazo || x.prazoEntrega || x.leadTime || null
-  }));
-}
-
+// Função principal de cotação
 app.post('/cotacao', async (req, res) => {
-  const started = Date.now();
   console.log('🚚 Iniciando cotação...');
+  const { origem, destino, altura, largura, comprimento, peso, valorDeclarado } = req.body;
+
+  if (!origem || !destino) {
+    return res.status(400).json({ ok: false, error: 'Campos obrigatórios ausentes.' });
+  }
+
   try {
-    const { origem, destino } = req.body;
-    if (!origem || !destino) return res.status(400).json({ error: 'Campos origem e destino são obrigatórios' });
-    const token = await login();
-    const [rem, des] = await Promise.all([fetchCEP(origem), fetchCEP(destino)]);
-    const servicos = normalizeServicos(req.body.servicos);
-    const payload = buildPayload(req.body, rem, des, servicos, PJ_EMAIL);
-    console.log('📦 Enviando requisição POST para /preco-prazo...');
-    const { data } = await limiter.schedule(() =>
-      axios.post(`${BACK_BASE}/preco-prazo`, payload, {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000
-      })
-    );
-    const resultados = normalizeResponse(data);
-    const took = Date.now() - started;
-    console.log(`✅ Cotação concluída em ${took}ms`);
-    res.json({ ok: true, fonte: BACK_BASE, tookMs: took, timestamp: new Date().toISOString(), resultados });
-  } catch (err) {
-    console.error('❌ Erro na cotação:', err.message);
-    res.status(500).json({ ok: false, error: err.message, data: err.response?.data });
+    const token = await getToken();
+    const url = `${FRETE_URL}?cepOrigem=${origem}&cepDestino=${destino}&altura=${altura}&largura=${largura}&comprimento=${comprimento}&peso=${peso}&valorDeclarado=${valorDeclarado}&codigoServico=&prazo=0&prazoFinal=0&valor=0&quantidade=1&logisticaReversa=false&remetente[logradouro]=Rua+Quintino+Loureiro&remetente[cep]=29190-014&remetente[cidade]=Aracruz&remetente[bairro]=Centro&remetente[uf]=ES&remetente[complemento]=&destinatario[logradouro]=Rua+Vitorino+Carmilo&destinatario[cep]=${destino}&destinatario[cidade]=Sao+Paulo&destinatario[bairro]=Barra+Funda&destinatario[uf]=SP&destinatario[complemento]=&tipoEmbalagem=1&tipo=2&servicos[]=03220&servicos[]=03298&servicos[]=04227&servicos[]=.package&servicos[]=economico`;
+
+    const response = await axios.get(url, {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+
+    const resultados = response.data.map(frete => ({
+      servico: frete.coProduto,
+      valor: frete.pcFinal,
+      prazo: frete.prazoEntrega
+    }));
+
+    return res.json({ ok: true, resultados });
+
+  } catch (error) {
+    console.error('❌ Erro na cotação:', error.response?.data || error.message);
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+      data: error.response?.data || null
+    });
   }
 });
 
-app.get('/', (_, res) => res.send('fretebot v4.5 online'));
-app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+});
