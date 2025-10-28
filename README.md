@@ -1,22 +1,21 @@
-# 🚀 FreteBot v3.3 (Timeout Estendido + Re-tentativa + JSON Estruturado)
+# Fretebot v4.1 (login via HTTP + token cache + 1 req/s)
 
-## ⚙️ Melhorias
-- ⏱ **Timeout aumentado para 120s** (Render pode ser lento no primeiro boot).
-- 🔁 **Re-tentativa automática** de login e detecção inteligente da rota correta.
-- 🧭 **Compatível com /home, /login ou /entrar** automaticamente.
-- 🧠 **Cache local de cookies** — evita login repetido.
-- 📊 **Respostas estruturadas em JSON** (serviço, valor, prazo).
+## O que inclui
+- Login direto via POST `https://back.clubepostaja.com.br/auth/login` com `usuario` e `senha`.
+- Cache de token JWT local em `local-cache/token.json` (reutiliza até expirar).
+- Limite de requisições: 1 por segundo (Bottleneck).
+- Endpoint HTTP `/cotacao` para receber o payload e retornar resultado JSON estruturado.
+- Fallbacks e tratamento básico de erros.
 
-## 🧩 Exemplo de retorno
-```json
-{
-  "sucesso": true,
-  "fretes": [
-    { "servico": "Serviço 1", "prazo": "4-6 dias úteis", "valor": 43.86 },
-    { "servico": "Serviço 2", "prazo": "8-10 dias úteis", "valor": 23.46 }
-  ]
-}
-```
+## Variáveis de ambiente (no Render)
+- `POSTA_USUARIO` (ou POSTA_USER) — e-mail/usário do conta PostaJá.
+- `POSTA_SENHA` (ou POSTA_PASS) — senha.
+- `BACK_BASE` — opcional, default `https://back.clubepostaja.com.br`
+- `PORT` — opcional.
 
----
-© 2025 FreteBot v3.3
+## Uso
+Enviar POST para `/cotacao` com JSON no mesmo esquema que você já usa.
+
+## Observações
+- O código tenta automaticamente fazer login e armazenar token. Caso não encontre o token no payload da resposta, lança erro.
+- Evita usar Puppeteer / Browserless e faz a integração via HTTP.
