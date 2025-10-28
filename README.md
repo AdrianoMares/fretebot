@@ -1,27 +1,11 @@
-# 🚀 FreteBot (Render - Puppeteer Local Final)
+# 🚀 FreteBot v3.2 (Cache Local + JSON Estruturado)
 
-Servidor Node.js com Puppeteer rodando 100% localmente no Render.
+## ⚙️ O que há de novo
+- 🧠 **Cache de sessão local:** Login é feito apenas uma vez e cookies são salvos em `cookies.json`.
+- 📦 **Resultados em JSON estruturado:** Cada frete contém `servico`, `prazo`, `valor`.
+- 🧱 **Executa Puppeteer localmente no Render (sem Browserless).**
 
-## ⚙️ Variáveis de ambiente
-```
-POSTAJA_EMAIL=seu@email.com
-POSTAJA_SENHA=sua_senha
-CHROME_PATH=/opt/render/project/.chrome/chrome/linux-127.0.6533.88/chrome
-PUPPETEER_SKIP_DOWNLOAD=false
-PORT=10000
-```
-
-## 🧱 Deploy no Render
-1. Faça upload desses arquivos no seu repositório GitHub.
-2. Crie um novo **Web Service** no Render.
-3. Configure as variáveis de ambiente acima.
-4. Deploy automático — o log mostrará:
-   ```bash
-   Downloading Chrome...
-   Chrome downloaded to /opt/render/project/.chrome
-   ```
-
-## 🧩 Endpoint de cotação
+## 🧩 Endpoint
 POST `/cotacao`
 ```json
 {
@@ -35,5 +19,15 @@ POST `/cotacao`
 }
 ```
 
+## 🧰 Retorno
+```json
+{
+  "sucesso": true,
+  "fretes": [
+    { "servico": "Serviço 1", "prazo": "4-6 dias úteis", "valor": 43.86 }
+  ]
+}
+```
+
 ---
-© 2025 FreteBot - Puppeteer Local Final
+© 2025 FreteBot - Cache Local + JSON Estruturado
