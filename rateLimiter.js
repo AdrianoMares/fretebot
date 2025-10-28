@@ -1,4 +1,3 @@
-// Minimal 1-req-per-interval limiter
 export function createRateLimiter(minIntervalMs = 1000) {
   let last = 0;
   let queue = Promise.resolve();
@@ -13,6 +12,5 @@ export function createRateLimiter(minIntervalMs = 1000) {
     });
     return queue;
   }
-
   return { schedule };
 }

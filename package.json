@@ -1,8 +1,8 @@
 {
   "name": "fretebot",
-  "version": "4.2.0",
+  "version": "4.3.0",
   "type": "module",
-  "description": "FreteBot - Cotações PostaJá via HTTP + cache de token + rate limit 1 req/s",
+  "description": "FreteBot v4.3 - HTTP direto + token cache + rate limit",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
@@ -13,7 +13,6 @@
   "dependencies": {
     "axios": "^1.7.4",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "p-limit": "^6.1.0"
+    "express": "^4.19.2"
   }
 }
