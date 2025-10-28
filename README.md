@@ -1,21 +1,55 @@
-# Fretebot v4.1 (login via HTTP + token cache + 1 req/s)
+# fretebot v4.2
 
-## O que inclui
-- Login direto via POST `https://back.clubepostaja.com.br/auth/login` com `usuario` e `senha`.
-- Cache de token JWT local em `local-cache/token.json` (reutiliza até expirar).
-- Limite de requisições: 1 por segundo (Bottleneck).
-- Endpoint HTTP `/cotacao` para receber o payload e retornar resultado JSON estruturado.
-- Fallbacks e tratamento básico de erros.
+Fluxo: recebe um JSON simples, enriquece campos, faz login na API do PostaJá, chama `/preco-prazo` e retorna resultado em JSON estruturado.
 
-## Variáveis de ambiente (no Render)
-- `POSTA_USUARIO` (ou POSTA_USER) — e-mail/usário do conta PostaJá.
-- `POSTA_SENHA` (ou POSTA_PASS) — senha.
-- `BACK_BASE` — opcional, default `https://back.clubepostaja.com.br`
-- `PORT` — opcional.
+## Requisição esperada (POST /cotacao)
+```json
+{
+  "origem": "29190-014",
+  "destino": "01153-000",
+  "peso": 0.1,
+  "largura": 20,
+  "altura": 10,
+  "comprimento": 25,
+  "valorDeclarado": 100
+}
+```
 
-## Uso
-Enviar POST para `/cotacao` com JSON no mesmo esquema que você já usa.
+Campos opcionais:
+- `servicos`: array ou string (ex: `["03220","03298","04227",".package","economico"]`). Default igual ao exemplo se não informado.
+
+## Variáveis de ambiente
+Veja `.env.example` e configure:
+- `BACK_BASE` (default: `https://back.clubepostaja.com.br`)
+- `PJ_EMAIL`, `PJ_SENHA` (obrigatórias)
+- `PORT` (default: 10000)
+- `TOKEN_CACHE` (default: `./token-cache.json`)
+- `RATE_MIN_INTERVAL_MS` (default: 1000)
+
+## Execução local
+```bash
+npm install
+cp .env.example .env
+# Edite .env com suas credenciais
+npm start
+```
+
+Teste:
+```bash
+curl -X POST http://localhost:10000/cotacao \
+  -H "Content-Type: application/json" \
+  -d '{
+    "origem": "29190-014",
+    "destino": "01153-000",
+    "peso": 0.1,
+    "largura": 20,
+    "altura": 10,
+    "comprimento": 25,
+    "valorDeclarado": 100
+  }'
+```
 
 ## Observações
-- O código tenta automaticamente fazer login e armazenar token. Caso não encontre o token no payload da resposta, lança erro.
-- Evita usar Puppeteer / Browserless e faz a integração via HTTP.
+- Token JWT é armazenado em arquivo e reutilizado até expirar.
+- Rate limit de 1 requisição/segundo para chamadas externas.
+- Se a API do PostaJá mudar o formato do retorno, o `normalizeCotacaoResponse` tenta montar uma lista `[ { servico, valor, prazo } ]`. Caso não consiga, retorna `{ raw: <resposta original> }`.

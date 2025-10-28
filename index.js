@@ -1,197 +1,244 @@
-import express from "express";
-import axios from "axios";
-import fs from "fs-extra";
-import path from "path";
-import Bottleneck from "bottleneck";
-import jwt_decode from "jsonwebtoken";
+import express from 'express';
+import axios from 'axios';
+import dotenv from 'dotenv';
+import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { readToken, writeToken } from './utils/tokenCache.js';
+import { createRateLimiter } from './utils/rateLimiter.js';
+import { fetchCEP } from './utils/opencep.js';
 
-const PORT = process.env.PORT || 10000;
-const BACK_BASE = process.env.BACK_BASE || "https://back.clubepostaja.com.br";
-const USUARIO = process.env.POSTA_USUARIO || process.env.POSTA_USER || "";
-const SENHA = process.env.POSTA_SENHA || process.env.POSTA_PASS || "";
-const TOKEN_PATH = path.join(process.cwd(), "local-cache", "token.json");
+dotenv.config();
 
-await fs.ensureDir(path.join(process.cwd(), "local-cache"));
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-const limiter = new Bottleneck({
-  minTime: 1000, // 1 request per second
-  maxConcurrent: 1,
-});
+const PORT = Number(process.env.PORT || 10000);
+const BACK_BASE = (process.env.BACK_BASE || 'https://back.clubepostaja.com.br').replace(/\/$/, '');
+const PJ_EMAIL = process.env.PJ_EMAIL || '';
+const PJ_SENHA = process.env.PJ_SENHA || '';
+const TOKEN_CACHE = process.env.TOKEN_CACHE || path.join(__dirname, 'token-cache.json');
+const RATE_MIN_INTERVAL_MS = Number(process.env.RATE_MIN_INTERVAL_MS || 1000);
 
+const limiter = createRateLimiter(RATE_MIN_INTERVAL_MS);
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
 
-function log(...args){ console.log(...args); }
-
-async function saveToken(token, expiresAt){
-  const obj = { token, obtained_at: Date.now(), expires_at: expiresAt };
-  await fs.writeJson(TOKEN_PATH, obj, { spaces: 2 });
+function log(...args) {
+  console.log(...args);
 }
 
-async function readToken(){
-  try{
-    const obj = await fs.readJson(TOKEN_PATH);
-    return obj;
-  }catch(e){
-    return null;
+function extractToken(loginResponseData) {
+  if (!loginResponseData || typeof loginResponseData !== 'object') return null;
+  // Try common fields
+  return (
+    loginResponseData.token ||
+    loginResponseData.access_token ||
+    loginResponseData.jwt ||
+    (loginResponseData.data && (loginResponseData.data.token || loginResponseData.data.access_token || loginResponseData.data.jwt)) ||
+    null
+  );
+}
+
+async function loginAndGetToken(force = false) {
+  if (!force) {
+    const cached = await readToken(TOKEN_CACHE);
+    if (cached && cached.token) return cached.token;
   }
-}
+  if (!PJ_EMAIL || !PJ_SENHA) throw new Error('Credenciais ausentes (PJ_EMAIL/PJ_SENHA).');
 
-function tokenExpired(obj){
-  if(!obj) return true;
-  if(!obj.expires_at) return false;
-  return Date.now() > obj.expires_at - 5*1000; // 5s leeway
-}
+  const url = `${BACK_BASE}/auth/login`;
+  log('🔐 Efetuando login via HTTP...', url);
 
-async function doLogin(){
-  if(!USUARIO || !SENHA){
-    throw new Error("POSTA_USUARIO or POSTA_SENHA env vars not set");
+  const { data } = await limiter.schedule(() =>
+    axios.post(url, { email: PJ_EMAIL, senha: PJ_SENHA }, {
+      headers: { 'Content-Type': 'application/json' },
+      timeout: 20000
+    })
+  );
+
+  const token = extractToken(data);
+  if (!token) {
+    throw new Error('Login OK, mas token não encontrado na resposta.');
   }
-  log("Logging in via HTTP to", BACK_BASE + "/auth/login");
-  const payload = { usuario: USUARIO, senha: SENHA };
-  const resp = await axios.post(`${BACK_BASE}/auth/login`, payload, {
-    headers: { "Content-Type": "application/json", "Origin": "https://clubepostaja.com.br" },
-    timeout: 30000,
-  });
-  const data = resp.data || {};
-  const token = data.token || data.accessToken || data.jwt || data?.data?.token;
-  if(!token) throw new Error("Login succeeded but no token found in response: " + JSON.stringify(data).slice(0,200));
-  // try to decode exp
-  let expiresAt = null;
-  try{
-    const decoded = jwt_decode.decode(token);
-    if(decoded && decoded.exp){
-      expiresAt = decoded.exp * 1000;
-    } else if(data.expiresIn){
-      expiresAt = Date.now() + (Number(data.expiresIn) * 1000);
-    } else {
-      // default 1 hour
-      expiresAt = Date.now() + 60*60*1000;
+
+  // Optionally fetch /usuarios/me to extract exp from JWT or validate
+  let exp = null;
+  try {
+    const [, payloadB64] = token.split('.');
+    if (payloadB64) {
+      const payload = JSON.parse(Buffer.from(payloadB64, 'base64').toString('utf-8'));
+      exp = payload && payload.exp ? payload.exp : null;
     }
-  }catch(e){
-    expiresAt = Date.now() + 60*60*1000;
-  }
-  await saveToken(token, expiresAt);
+  } catch {}
+
+  await writeToken(TOKEN_CACHE, { token, exp, at: Date.now() });
   return token;
 }
 
-async function getToken(){
-  const cached = await readToken();
-  if(cached && !tokenExpired(cached)) return cached.token;
-  // else login
-  const token = await doLogin();
+function normalizeServicos(raw) {
+  if (Array.isArray(raw)) return raw.filter(Boolean).map(String);
+  if (typeof raw === 'string') {
+    try {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr)) return arr.filter(Boolean).map(String);
+    } catch {}
+    // split by comma
+    return raw.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  // default set
+  return ['03220', '03298', '04227', '.package', 'economico'];
+}
+
+function toCentavos(possiblyKgOrGramas) {
+  // PostaJá parece receber "peso" em gramas no endpoint inspeccionado (ex.: 100)
+  // Nosso input vem em kg (ex.: 0.1). Convertemos: kg -> gramas (kg * 1000), arredondando.
+  const n = Number(possiblyKgOrGramas);
+  if (Number.isNaN(n)) return 0;
+  if (n <= 10) return Math.round(n * 1000);
+  // se já vier grande (ex.: 100 para 100g), retornamos como está
+  return Math.round(n);
+}
+
+function buildPrecoPrazoPayload(base, remetente, destinatario, servicos) {
+  // Campos padrão conforme o HAR observado
+  const payload = {
+    cepOrigem: base.origem,
+    cepDestino: base.destino,
+    altura: Math.max(2, Math.round(base.altura || 0)),
+    largura: Math.max(12, Math.round(base.largura || 0)),
+    comprimento: Math.max(16, Math.round(base.comprimento || 0)),
+    peso: toCentavos(base.peso), // gramas
+    valorDeclarado: Number(base.valorDeclarado || 0).toFixed(2),
+    codigoServico: "",
+    prazo: 0,
+    prazoFinal: 0,
+    valor: 0,
+    quantidade: 1,
+    logisticaReversa: false,
+    remetente: {
+      logradouro: remetente.logradouro || '',
+      cep: remetente.cep || base.origem,
+      cidade: remetente.cidade || '',
+      bairro: remetente.bairro || '',
+      uf: remetente.uf || '',
+      complemento: remetente.complemento || ''
+    },
+    destinatario: {
+      logradouro: destinatario.logradouro || '',
+      cep: destinatario.cep || base.destino,
+      cidade: destinatario.cidade || '',
+      bairro: destinatario.bairro || '',
+      uf: destinatario.uf || '',
+      complemento: destinatario.complemento || ''
+    },
+    tipoEmbalagem: 1,
+    tipo: 2,
+    servicos // array obrigatória
+  };
+  return payload;
+}
+
+function normalizeCotacaoResponse(data) {
+  // Tentamos ser resilientes a formatos diferentes
+  // Caso venha algo tipo { resultados:[{codigoServico, valor, prazo, nome}], ... }
+  const out = [];
+
+  const candidates = Array.isArray(data) ? data
+                    : Array.isArray(data?.resultados) ? data.resultados
+                    : Array.isArray(data?.cotacoes) ? data.cotacoes
+                    : Array.isArray(data?.data) ? data.data
+                    : (typeof data === 'object' ? Object.values(data).find(Array.isArray) : null);
+
+  if (Array.isArray(candidates)) {
+    for (const item of candidates) {
+      const servico = item?.servico || item?.codigoServico || item?.codigo || item?.nome || 'desconhecido';
+      const valor = Number(
+        item?.valor ?? item?.preco ?? item?.precoFinal ?? item?.preco_total ?? item?.price ?? 0
+      );
+      // prazo pode vir como string "4-6 dias úteis" ou como número
+      const prazo = item?.prazo ?? item?.prazoEntrega ?? item?.leadTime ?? item?.sla ?? item?.tempo ?? null;
+      out.push({ servico, valor, prazo });
+    }
+  }
+
+  // Fallback: se não achou, retorna o body bruto
+  return out.length ? out : [{ raw: data }];
+}
+
+async function ensureToken() {
+  let token = await loginAndGetToken(false);
   return token;
 }
 
-async function apiGet(pathUrl, params={}, retry=true){
-  return limiter.schedule(async ()=>{
-    const token = await getToken();
-    try{
-      const resp = await axios.get(`${BACK_BASE}${pathUrl}`, {
-        params,
-        headers: { Authorization: `Bearer ${token}` },
-        timeout: 30000,
-      });
-      return resp.data;
-    }catch(err){
-      if(err.response && err.response.status === 401 && retry){
-        // maybe token expired, force login and retry once
-        await doLogin();
-        return apiGet(pathUrl, params, false);
-      }
-      throw err;
-    }
-  });
-}
+app.post('/cotacao', async (req, res) => {
+  const started = Date.now();
+  try {
+    log('🚚 Iniciando cotação...');
 
-// Convert incoming request to /preco-prazo params expected by PostaJá
-function buildPrecoParams(body){
-  const params = {
-    cepOrigem: body.origem?.replace(/\D/g,'') ? body.origem.replace(/\D/g,'') : body.origem,
-    cepDestino: body.destino?.replace(/\D/g,'') ? body.destino.replace(/\D/g,'') : body.destino,
-    altura: body.altura ?? 1,
-    largura: body.largura ?? 1,
-    comprimento: body.comprimento ?? 1,
-    peso: body.peso ?? 0.1,
-    valorDeclarado: (body.valorDeclarado ?? 0).toFixed(2),
-    quantidade: body.quantidade ?? 1,
-    logisticaReversa: body.logisticaReversa ?? false,
-    tipoEmbalagem: body.tipoEmbalagem ?? 1,
-    tipo: body.tipo ?? 2,
-  };
-  // If remetente/destinatario provided copy fields
-  if(body.remetente) {
-    for(const k of ["logradouro","cep","cidade","bairro","uf","complemento"]){
-      if(body.remetente[k] !== undefined) params[`remetente[${k}]`] = body.remetente[k];
-    }
-  }
-  if(body.destinatarioData || body.destinatario) {
-    const d = body.destinatarioData ?? body.destinatario;
-    for(const k of ["logradouro","cep","cidade","bairro","uf","complemento"]){
-      if(d[k] !== undefined) params[`destinatario[${k}]`] = d[k];
-    }
-  }
-  if(Array.isArray(body.servicos)){
-    for(const s of body.servicos) params["servicos[]"] = body.servicos;
-  }
-  return params;
-}
-
-function normalizeServiceItem(item){
-  const serv = item.nome || item.nomeServico || item.servico || item.title || item.service || item.name;
-  const valorStr = item.valor || item.preco || item.price || item.valorServico || item.vl || item.value;
-  const prazo = item.prazo || item.tempo || item.prazoEntrega || item.deliveryTime || item.days;
-  let valor = null;
-  if(typeof valorStr === "number") valor = valorStr;
-  else if(typeof valorStr === "string"){
-    const m = valorStr.match(/[\d\.,]+/);
-    if(m) valor = parseFloat(m[0].replace(/\./g,"").replace(",", "."));
-  }
-  return {
-    servico: serv ?? item.title ?? item.name ?? "unknown",
-    valor: valor,
-    prazo: prazo ?? null,
-    raw: item
-  };
-}
-
-app.post("/cotacao", async (req, res) => {
-  try{
-    log("🚚 Iniciando cotação...");
     const body = req.body || {};
-    const params = buildPrecoParams(body);
-    log("🔐 Using BACK_BASE:", BACK_BASE);
-    const data = await apiGet("/preco-prazo", params);
-    let services = [];
-    if(Array.isArray(data)) services = data;
-    else if(Array.isArray(data.servicos)) services = data.servicos;
-    else if(Array.isArray(data.data)) services = data.data;
-    else if(data.result && Array.isArray(data.result)) services = data.result;
-    else {
-      for(const k of Object.keys(data||{})){
-        if(Array.isArray(data[k])) { services = data[k]; break; }
-      }
+    const origem = String(body.origem || '').trim();
+    const destino = String(body.destino || '').trim();
+    if (!origem || !destino) {
+      return res.status(400).json({ error: 'origem e destino são obrigatórios' });
     }
-    const normalized = services.map(normalizeServiceItem);
-    if(normalized.length === 0){
-      return res.json({ ok: true, raw: data });
+
+    // 1) garante token
+    const token = await ensureToken();
+
+    // 2) enriquece CEPs
+    const [rem, des] = await Promise.all([fetchCEP(origem), fetchCEP(destino)]);
+
+    // 3) normaliza serviços (default se não vier)
+    const servicos = normalizeServicos(body.servicos);
+
+    // 4) monta payload
+    const payload = buildPrecoPrazoPayload(body, rem, des, servicos);
+
+    // 5) envia requisição ao PostaJá
+    const url = `${BACK_BASE}/preco-prazo`;
+    log('📨 Enviando para', url);
+
+    const { data } = await limiter.schedule(() =>
+      axios.get(url, {
+        // Endpoint do HAR era GET com querystring — manter compatibilidade
+        params: payload,
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Accept': 'application/json'
+        },
+        timeout: 30000
+      })
+    );
+
+    const resultados = normalizeCotacaoResponse(data);
+    const took = Date.now() - started;
+    return res.json({ ok: true, tookMs: took, resultados, fonte: 'PostaJá /preco-prazo' });
+
+  } catch (err) {
+    // Se login 401, força renovar token
+    const status = err?.response?.status;
+    const data = err?.response?.data;
+    if (status === 401) {
+      try {
+        await fs.unlink(TOKEN_CACHE);
+      } catch {}
     }
-    const list = normalized.map(s => ({ servico: s.servico, valor: s.valor, prazo: s.prazo }));
-    const cheapest = list.filter(x=>x.valor!=null).sort((a,b)=>a.valor-b.valor)[0] ?? null;
-    return res.json({ ok: true, cheapest, list });
-  }catch(err){
-    console.error("❌ Erro na cotação:", err.message || err);
-    if(err.response){
-      console.error("status:", err.response.status, "data:", JSON.stringify(err.response.data).slice(0,400));
-      return res.status(err.response.status).json({ ok:false, error: err.message, status: err.response.status, data: err.response.data });
-    }
-    return res.status(500).json({ ok:false, error: err.message || String(err) });
+    log('❌ Erro na cotação:', err?.message || err);
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || String(err),
+      status,
+      data
+    });
   }
 });
 
-app.get("/health", (req,res)=> res.json({ ok:true }));
+app.get('/', (_, res) => {
+  res.type('text/plain').send('fretebot v4.2 online');
+});
 
-app.listen(PORT, ()=>{
-  console.log("Servidor rodando na porta", PORT);
-  console.log("Available at your primary URL", process.env.PRIMARY_URL || "");
+app.listen(PORT, () => {
+  console.log(`Servidor rodando na porta ${PORT}`);
+  console.log(`Available at your primary URL`);
 });
