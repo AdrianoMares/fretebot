@@ -1,18 +1,17 @@
 {
   "name": "fretebot",
   "version": "1.0.0",
-  "type": "module",
+  "description": "Calculadora de frete automatizada PostaJá",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "^22.15.0"
+  },
   "engines": {
     "node": ">=20 <23"
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "puppeteer-core": "^22.15.0"
   }
 }
