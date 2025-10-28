@@ -109,11 +109,13 @@ app.post('/cotacao', async (req, res) => {
     const [rem, des] = await Promise.all([fetchCEP(origem), fetchCEP(destino)]);
     const servicos = normalizeServicos(req.body.servicos);
     const payload = buildPayload(req.body, rem, des, servicos, PJ_EMAIL);
-    console.log('📦 Enviando requisição para /preco-prazo...');
+    console.log('📦 Enviando requisição POST para /preco-prazo...');
     const { data } = await limiter.schedule(() =>
-      axios.get(`${BACK_BASE}/preco-prazo`, {
-        params: payload,
-        headers: { Authorization: `Bearer ${token}` },
+      axios.post(`${BACK_BASE}/preco-prazo`, payload, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
         timeout: 30000
       })
     );
@@ -127,5 +129,5 @@ app.post('/cotacao', async (req, res) => {
   }
 });
 
-app.get('/', (_, res) => res.send('fretebot v4.4 online'));
+app.get('/', (_, res) => res.send('fretebot v4.5 online'));
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));
