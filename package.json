@@ -1,7 +1,7 @@
 {
   "name": "fretebot",
-  "version": "1.3.2",
-  "description": "Calculadora de frete automatizada PostaJá (Render local Puppeteer + cache local)",
+  "version": "1.3.3",
+  "description": "Calculadora de frete automatizada PostaJá (Render local Puppeteer + cache local + timeout estendido)",
   "main": "index.js",
   "type": "module",
   "scripts": {

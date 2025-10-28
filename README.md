@@ -1,33 +1,22 @@
-# 🚀 FreteBot v3.2 (Cache Local + JSON Estruturado)
+# 🚀 FreteBot v3.3 (Timeout Estendido + Re-tentativa + JSON Estruturado)
 
-## ⚙️ O que há de novo
-- 🧠 **Cache de sessão local:** Login é feito apenas uma vez e cookies são salvos em `cookies.json`.
-- 📦 **Resultados em JSON estruturado:** Cada frete contém `servico`, `prazo`, `valor`.
-- 🧱 **Executa Puppeteer localmente no Render (sem Browserless).**
+## ⚙️ Melhorias
+- ⏱ **Timeout aumentado para 120s** (Render pode ser lento no primeiro boot).
+- 🔁 **Re-tentativa automática** de login e detecção inteligente da rota correta.
+- 🧭 **Compatível com /home, /login ou /entrar** automaticamente.
+- 🧠 **Cache local de cookies** — evita login repetido.
+- 📊 **Respostas estruturadas em JSON** (serviço, valor, prazo).
 
-## 🧩 Endpoint
-POST `/cotacao`
-```json
-{
-  "origem": "29190-014",
-  "destino": "01153-000",
-  "peso": 0.1,
-  "largura": 20,
-  "altura": 10,
-  "comprimento": 25,
-  "valorDeclarado": 100
-}
-```
-
-## 🧰 Retorno
+## 🧩 Exemplo de retorno
 ```json
 {
   "sucesso": true,
   "fretes": [
-    { "servico": "Serviço 1", "prazo": "4-6 dias úteis", "valor": 43.86 }
+    { "servico": "Serviço 1", "prazo": "4-6 dias úteis", "valor": 43.86 },
+    { "servico": "Serviço 2", "prazo": "8-10 dias úteis", "valor": 23.46 }
   ]
 }
 ```
 
 ---
-© 2025 FreteBot - Cache Local + JSON Estruturado
+© 2025 FreteBot v3.3
