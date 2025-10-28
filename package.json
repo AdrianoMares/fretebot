@@ -1,12 +1,12 @@
 {
   "name": "fretebot",
-  "version": "1.2.0",
-  "description": "Calculadora de frete automatizada PostaJá (Puppeteer local no Render)",
+  "version": "1.3.0",
+  "description": "Calculadora de frete automatizada PostaJá (Render fix final)",
   "main": "index.js",
   "type": "module",
   "scripts": {
     "start": "node index.js",
-    "postinstall": "rm -rf node_modules/puppeteer/.local-chromium && npm rebuild puppeteer && npx puppeteer browsers install chrome"
+    "postinstall": "npx puppeteer browsers install chrome --path=/opt/render/project/.chrome"
   },
   "dependencies": {
     "express": "^4.19.2",
@@ -16,6 +16,6 @@
     "node": ">=20 <23"
   },
   "puppeteer": {
-    "cacheDirectory": "./node_modules/puppeteer/.local-chromium"
+    "cacheDirectory": "/opt/render/project/.chrome"
   }
 }

@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 10000;
 async function getFrete({ origem, destino, peso, largura, altura, comprimento, valorDeclarado }) {
   const browser = await puppeteer.launch({
     headless: true,
-    executablePath: puppeteer.executablePath(),
+    executablePath: process.env.CHROME_PATH || puppeteer.executablePath(),
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
