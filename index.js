@@ -8,12 +8,6 @@ import { throttle } from './rateLimit.js';
 const app = express();
 app.use(express.json());
 
-app.use(cors({
-  origin: ['https://freteaz.com.br', 'https://www.freteaz.com.br'],
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
 const PORT = process.env.PORT || 10000;
 const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
 const USUARIO = process.env.POSTAJA_USUARIO;
