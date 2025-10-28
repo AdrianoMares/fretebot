@@ -1,7 +1,6 @@
 export function createRateLimiter(minIntervalMs = 1000) {
   let last = 0;
   let queue = Promise.resolve();
-
   async function schedule(fn) {
     queue = queue.then(async () => {
       const now = Date.now();

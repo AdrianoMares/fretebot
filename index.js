@@ -28,9 +28,13 @@ function extractToken(data) {
 }
 
 async function login(force = false) {
+  console.log('🔐 Fazendo login via HTTP...');
   if (!force) {
     const cached = await readToken(TOKEN_CACHE);
-    if (cached?.token) return cached.token;
+    if (cached?.token) {
+      console.log('✅ Token carregado do cache');
+      return cached.token;
+    }
   }
   const url = `${BACK_BASE}/auth/login`;
   const { data } = await limiter.schedule(() =>
@@ -45,6 +49,7 @@ async function login(force = false) {
     exp = payload?.exp;
   } catch {}
   await writeToken(TOKEN_CACHE, { token, exp, at: Date.now() });
+  console.log('🔑 Token salvo em cache');
   return token;
 }
 
@@ -60,8 +65,9 @@ function toGramas(peso) {
   return Math.round(n);
 }
 
-function buildPayload(base, rem, des, servicos) {
+function buildPayload(base, rem, des, servicos, usuario) {
   return {
+    usuario,
     cepOrigem: base.origem,
     cepDestino: base.destino,
     altura: base.altura || 2,
@@ -94,13 +100,16 @@ function normalizeResponse(data) {
 }
 
 app.post('/cotacao', async (req, res) => {
+  const started = Date.now();
+  console.log('🚚 Iniciando cotação...');
   try {
     const { origem, destino } = req.body;
     if (!origem || !destino) return res.status(400).json({ error: 'Campos origem e destino são obrigatórios' });
     const token = await login();
     const [rem, des] = await Promise.all([fetchCEP(origem), fetchCEP(destino)]);
     const servicos = normalizeServicos(req.body.servicos);
-    const payload = buildPayload(req.body, rem, des, servicos);
+    const payload = buildPayload(req.body, rem, des, servicos, PJ_EMAIL);
+    console.log('📦 Enviando requisição para /preco-prazo...');
     const { data } = await limiter.schedule(() =>
       axios.get(`${BACK_BASE}/preco-prazo`, {
         params: payload,
@@ -109,11 +118,14 @@ app.post('/cotacao', async (req, res) => {
       })
     );
     const resultados = normalizeResponse(data);
-    res.json({ ok: true, resultados });
+    const took = Date.now() - started;
+    console.log(`✅ Cotação concluída em ${took}ms`);
+    res.json({ ok: true, fonte: BACK_BASE, tookMs: took, timestamp: new Date().toISOString(), resultados });
   } catch (err) {
+    console.error('❌ Erro na cotação:', err.message);
     res.status(500).json({ ok: false, error: err.message, data: err.response?.data });
   }
 });
 
-app.get('/', (_, res) => res.send('fretebot v4.3 online'));
+app.get('/', (_, res) => res.send('fretebot v4.4 online'));
 app.listen(PORT, () => console.log(`Servidor rodando na porta ${PORT}`));

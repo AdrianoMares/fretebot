@@ -1,8 +1,8 @@
 {
   "name": "fretebot",
-  "version": "4.3.0",
+  "version": "4.4.0",
   "type": "module",
-  "description": "FreteBot v4.3 - HTTP direto + token cache + rate limit",
+  "description": "FreteBot v4.4 - login HTTP + cache + rate limit + usuario field + logs detalhados",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
