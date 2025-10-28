@@ -2,9 +2,8 @@ import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
 import fs from 'fs';
-import path from 'path';
-import { readValidToken, saveToken } from './utils/tokenCache.js';
-import { throttle } from './utils/rateLimit.js';
+import { readValidToken, saveToken } from './tokenCache.js';
+import { throttle } from './rateLimit.js';
 
 const app = express();
 app.use(express.json());
@@ -14,10 +13,21 @@ const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
 const USUARIO = process.env.POSTAJA_USUARIO;
 const SENHA = process.env.POSTAJA_SENHA;
 
+// Valida estrutura mínima
+['tokenCache.js', 'rateLimit.js', 'config.json'].forEach(file => {
+  if (!fs.existsSync(file)) {
+    console.error(`❌ Arquivo essencial ausente: ${file}`);
+    process.exit(1);
+  }
+});
+
 let config = { taxas: {} };
 try {
-  config = JSON.parse(fs.readFileSync(path.resolve('config.json'), 'utf-8'));
-} catch {}
+  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
+  console.log('✅ Estrutura validada e config.json carregado.');
+} catch {
+  console.warn('⚠️ config.json inválido ou ausente, usando padrão.');
+}
 
 const SERVICE_MAP = {
   '03220': { nome: 'Sedex', transportadora: 'Correios', taxa: 'SEDEX' },

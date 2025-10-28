@@ -1,7 +1,5 @@
 import fs from 'fs';
-import path from 'path';
-
-const TOKEN_FILE = path.resolve('.token.json');
+const TOKEN_FILE = '.token.json';
 
 export function saveToken(token, expSeconds) {
   const expAt = Date.now() + expSeconds * 1000;
