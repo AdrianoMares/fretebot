@@ -1,11 +1,12 @@
 {
   "name": "fretebot",
-  "version": "1.0.0",
-  "description": "Calculadora de frete automatizada PostaJá",
+  "version": "1.1.0",
+  "description": "Calculadora de frete automatizada PostaJá (Render local fix)",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "puppeteer browsers install chrome"
   },
   "dependencies": {
     "express": "^4.19.2",

@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 10000;
 async function getFrete({ origem, destino, peso, largura, altura, comprimento, valorDeclarado }) {
   const browser = await puppeteer.launch({
     headless: true,
+    executablePath: puppeteer.executablePath(), // usa o Chrome baixado automaticamente
     args: ["--no-sandbox", "--disable-setuid-sandbox"]
   });
 
@@ -37,8 +38,14 @@ async function getFrete({ origem, destino, peso, largura, altura, comprimento, v
   await page.type('input[name="valorDeclarado"]', String(valorDeclarado));
 
   // Clicar em Calcular Frete
-  await page.click('button:has-text("CALCULAR FRETE")');
-  await page.waitForNavigation({ waitUntil: "networkidle2" });
+  await page.evaluate(() => {
+    const botoes = Array.from(document.querySelectorAll("button"));
+    const botao = botoes.find(b => b.innerText.toUpperCase().includes("CALCULAR FRETE"));
+    if (botao) botao.click();
+  });
+
+  // Esperar resultados aparecerem
+  await page.waitForTimeout(5000);
 
   console.log("Extraindo valores...");
   const resultados = await page.evaluate(() => {
@@ -46,7 +53,6 @@ async function getFrete({ origem, destino, peso, largura, altura, comprimento, v
     return cards.map(el => el.innerText).filter(Boolean);
   });
 
-  await new Promise(resolve => setTimeout(resolve, 3000));
   await browser.close();
   return resultados;
 }
