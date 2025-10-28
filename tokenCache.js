@@ -1,17 +1,20 @@
-import fs from 'fs/promises';
+import fs from 'fs';
+import path from 'path';
 
-export async function readToken(cachePath) {
+const TOKEN_FILE = path.resolve('.token.json');
+
+export function saveToken(token, expSeconds) {
+  const expAt = Date.now() + expSeconds * 1000;
+  fs.writeFileSync(TOKEN_FILE, JSON.stringify({ token, expAt }), 'utf-8');
+}
+
+export function readValidToken() {
   try {
-    const raw = await fs.readFile(cachePath, 'utf-8');
-    const data = JSON.parse(raw);
-    if (!data.token) return null;
-    if (data.exp && Date.now() >= (data.exp - 120) * 1000) return null;
-    return data;
+    if (!fs.existsSync(TOKEN_FILE)) return null;
+    const data = JSON.parse(fs.readFileSync(TOKEN_FILE, 'utf-8'));
+    if (Date.now() < data.expAt - 30000) return data.token;
+    return null;
   } catch {
     return null;
   }
-}
-
-export async function writeToken(cachePath, payload) {
-  await fs.writeFile(cachePath, JSON.stringify(payload, null, 2), 'utf-8');
 }
