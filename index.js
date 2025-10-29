@@ -7,17 +7,22 @@ import { readValidToken, saveToken } from './tokenCache.js';
 import { throttle } from './rateLimit.js';
 
 const app = express();
-app.use(express.json());
 
-// ✅ CORS liberado apenas para o domínio do site
+// ✅ Configuração de CORS (antes de tudo)
 app.use(cors({
-  origin: ['https://www.freteaz.com.br'],
+  origin: [
+    'https://freteaz.com.br',
+    'https://www.freteaz.com.br'
+  ],
   methods: ['GET', 'POST', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
 }));
 
-// ✅ Suporte a requisições OPTIONS (pré-flight)
+// ✅ Suporte ao pré-flight OPTIONS
 app.options('*', cors());
+
+app.use(express.json());
 
 const PORT = 10000;
 const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
@@ -144,6 +149,7 @@ function massageResultado(raw) {
   return out;
 }
 
+// ✅ Rota principal de cotação
 app.post('/cotacao', async (req, res) => {
   const start = Date.now();
   try {
