@@ -2,18 +2,29 @@ import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
 import fs from 'fs';
+import cors from 'cors';
 import { readValidToken, saveToken } from './tokenCache.js';
 import { throttle } from './rateLimit.js';
 
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 10000;
+// ✅ CORS liberado apenas para o domínio do site
+app.use(cors({
+  origin: ['https://www.freteaz.com.br'],
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+// ✅ Suporte a requisições OPTIONS (pré-flight)
+app.options('*', cors());
+
+const PORT = 10000;
 const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
 const USUARIO = process.env.POSTAJA_USUARIO;
 const SENHA = process.env.POSTAJA_SENHA;
 
-// Valida estrutura mínima
+// ✅ Validação mínima da estrutura
 ['tokenCache.js', 'rateLimit.js', 'config.json'].forEach(file => {
   if (!fs.existsSync(file)) {
     console.error(`❌ Arquivo essencial ausente: ${file}`);
@@ -21,6 +32,7 @@ const SENHA = process.env.POSTAJA_SENHA;
   }
 });
 
+// ✅ Carregar config.json
 let config = { taxas: {} };
 try {
   config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
