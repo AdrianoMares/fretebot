@@ -1,153 +1,166 @@
+
 import 'dotenv/config';
 import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
 import axios from 'axios';
-import fs from 'fs';
+import crypto from 'crypto';
+import Redis from 'ioredis';
+import { throttle, ipRateLimit } from './rateLimit.js';
 import { readValidToken, saveToken } from './tokenCache.js';
-import { throttle } from './rateLimit.js';
+import config from './config.json' assert { type: 'json' };
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '256kb' }));
+app.use(helmet());
+app.use(compression());
+app.use(cors({ origin: ['https://freteaz.com.br','https://www.freteaz.com.br'], methods: ['POST','OPTIONS'] }));
+app.use(ipRateLimit({ windowMs: 60_000, max: 120 })); // 120 req/min/IP
 
 const PORT = process.env.PORT || 10000;
 const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
 const USUARIO = process.env.POSTAJA_USUARIO;
 const SENHA = process.env.POSTAJA_SENHA;
 
-// Valida estrutura mínima
-['tokenCache.js', 'rateLimit.js', 'config.json'].forEach(file => {
-  if (!fs.existsSync(file)) {
-    console.error(`❌ Arquivo essencial ausente: ${file}`);
-    process.exit(1);
+// --- Redis (opcional) para cache de resposta ---
+const redisUrl = process.env.REDIS_URL;
+const redisPrefix = process.env.REDIS_PREFIX || 'fretebot:';
+const REDIS_TTL = parseInt(process.env.REDIS_TTL_SECONDS || '300', 10);
+let redis = null;
+if (redisUrl) {
+  redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1 });
+  redis.on('error', (e) => console.error('Redis error:', e.message));
+  try { await redis.connect(); } catch {}
+}
+
+// --- Util: normaliza e gera chave para cache ---
+function cacheKeyFrom(req) {
+  const body = JSON.stringify(req.body || {});
+  const hash = crypto.createHash('sha1').update(body).digest('hex');
+  return `${redisPrefix}quote:${hash}`;
+}
+
+// --- Aplica taxa de margem ---
+// Suporta config.taxes (multiplicador) OU config.taxas (percentual)
+function applyTaxa(serviceName, base) {
+  const key = serviceName;
+  const mult = config?.taxes?.[key];
+  const perc = config?.taxas?.[key];
+  let final = base;
+  if (typeof mult === 'number') {
+    final = base * mult;
+  } else if (typeof perc === 'number') {
+    final = base * (1 + (perc / 100));
   }
-});
-
-let config = { taxas: {} };
-try {
-  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
-  console.log('✅ Estrutura validada e config.json carregado.');
-} catch {
-  console.warn('⚠️ config.json inválido ou ausente, usando padrão.');
+  return Math.round(final * 100) / 100;
 }
 
-const SERVICE_MAP = {
-  '03220': { nome: 'Sedex', transportadora: 'Correios', taxa: 'SEDEX' },
-  '03298': { nome: 'PAC', transportadora: 'Correios', taxa: 'PAC' },
-  '04227': { nome: 'Mini Envios', transportadora: 'Correios', taxa: 'Mini Envios' },
-  '.package': { nome: '.package', transportadora: 'Jadlog', taxa: 'Jadlog' }
-};
-const SERVICES = ['03220', '03298', '04227', '.package'];
-
-function normalizeValorDeclarado(v) {
-  let n = Number(v);
-  if (!Number.isFinite(n) || n < 0) n = 0;
-  if (n === 0) n = 10;
-  return n.toFixed(2);
+function mapService(codeOrName) {
+  const map = config?.SERVICE_MAP || {};
+  return map[codeOrName] || codeOrName;
 }
 
-function applyTaxa(servico, valorStr) {
-  const meta = SERVICE_MAP[servico];
-  if (!meta) return valorStr;
-  const taxa = Number(config?.taxas?.[meta.taxa]) || 0;
-  const preco = Number(String(valorStr).replace('.', '').replace(',', '.'));
-  if (!Number.isFinite(preco) || preco <= 0) return valorStr;
-  const final = preco + preco * (taxa / 100);
-  return final.toFixed(2).replace('.', ',');
-}
-
+// --- Login + token cache ---
 async function httpLogin() {
-  const cached = readValidToken();
-  if (cached) {
-    console.log('🔐 Token válido reutilizado');
-    return cached;
-  }
-  console.log('🔐 Gerando novo token...');
+  // tenta token válido
+  const cached = await readValidToken();
+  if (cached) return cached;
+
+  // realiza login
   const { data } = await axios.post(`${BACK_BASE}/auth/login`, {
-    usuario: USUARIO,
-    senha: SENHA
-  });
-  saveToken(data.token, 43200);
-  console.log('✅ Novo token salvo em cache');
+    usuario: USUARIO, senha: SENHA
+  }, { timeout: 15000 });
+  if (!data?.token || !data?.expires_in) {
+    throw new Error('Login sem token válido');
+  }
+  await saveToken(data.token, data.expires_in);
   return data.token;
 }
 
-function buildURL(p) {
-  const usp = new URLSearchParams();
-  usp.set('cepOrigem', p.origem);
-  usp.set('cepDestino', p.destino);
-  usp.set('altura', p.altura);
-  usp.set('largura', p.largura);
-  usp.set('comprimento', p.comprimento);
-  usp.set('peso', String(Math.round(Number(p.peso) * 1000)));
-  usp.set('valorDeclarado', normalizeValorDeclarado(p.valorDeclarado));
-  usp.set('codigoServico', '');
-  usp.set('prazo', '0');
-  usp.set('prazoFinal', '0');
-  usp.set('valor', '0');
-  usp.set('quantidade', '1');
-  usp.set('logisticaReversa', 'false');
-  usp.set('tipoEmbalagem', '1');
-  usp.set('tipo', '2');
-  SERVICES.forEach(s => usp.append('servicos[]', s));
-  return `${BACK_BASE}/preco-prazo?${usp}`;
+// --- Middleware de cache de resposta ---
+async function responseCache(req, res, next) {
+  if (!redis) return next();
+  const key = cacheKeyFrom(req);
+  try {
+    const cached = await redis.get(key);
+    if (cached) {
+      return res.json(JSON.parse(cached));
+    }
+  } catch {}
+  // intercepta res.json para salvar
+  const originalJson = res.json.bind(res);
+  res.json = async (payload) => {
+    try {
+      await redis.setex(key, REDIS_TTL, JSON.stringify(payload));
+    } catch {}
+    return originalJson(payload);
+  };
+  next();
 }
 
-function massageResultado(raw) {
-  const out = [];
-  for (const it of raw || []) {
-    const s = it?.coProduto || it?.servico;
-    if (!SERVICE_MAP[s]) continue;
-    let valor = it?.pcFinal ?? it?.valor ?? '0,00';
-    if (typeof valor === 'number') valor = valor.toFixed(2).replace('.', ',');
-    let prazo = Number(it?.prazoEntrega ?? it?.prazo ?? 0);
-    let txErro = false;
-    if (!valor || valor === '0,00' || valor === '0') {
-      valor = s === '04227'
-        ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
-        : 'Área de CEP de destino não atendida.';
-      txErro = true;
-    } else {
-      valor = applyTaxa(s, valor);
-    }
-    out.push({
-      transportadora: SERVICE_MAP[s].transportadora,
-      servico: SERVICE_MAP[s].nome,
-      valor,
-      prazo,
-      txErro
-    });
+// --- Validação mínima do corpo ---
+function validateBody(body) {
+  const required = ['cepOrigem','cepDestino','peso'];
+  const missing = required.filter(k => !body?.[k]);
+  if (missing.length) {
+    const err = new Error('Parâmetros obrigatórios ausentes: ' + missing.join(', '));
+    err.status = 400;
+    throw err;
   }
-  for (const s of SERVICES) {
-    if (!out.find(o => o.servico === SERVICE_MAP[s].nome)) {
-      out.push({
-        transportadora: SERVICE_MAP[s].transportadora,
-        servico: SERVICE_MAP[s].nome,
-        valor: s === '04227'
-          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
-          : 'Área de CEP de destino não atendida.',
-        prazo: 0,
-        txErro: true
-      });
-    }
-  }
-  return out;
 }
 
-app.post('/cotacao', async (req, res) => {
+// --- Handler principal ---
+app.post('/cotacao', responseCache, async (req, res) => {
   const start = Date.now();
   try {
+    validateBody(req.body);
     await throttle();
-    console.log('🚚 Iniciando cotação...');
+
     const token = await httpLogin();
-    const url = buildURL(req.body || {});
-    const { data, status } = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+
+    // Monta requisição para o Posta Já (ajuste o caminho se necessário)
+    const { cepOrigem, cepDestino, peso, valor, largura, altura, comprimento } = req.body;
+    const payload = { cepOrigem, cepDestino, peso, valor, largura, altura, comprimento };
+
+    const { data, status } = await axios.post(`${BACK_BASE}/api/cotacao`, payload, {
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 20000,
+    });
+
+    // Transforma a resposta e aplica margens
+    const itens = Array.isArray(data) ? data : (data?.itens || data?.servicos || []);
+    const resultados = itens.map((s) => {
+      const serviceName = mapService(s?.code || s?.service_code || s?.servico || s?.nome);
+      const base = Number(s?.valor || s?.valorFrete || s?.preco || s?.price || 0);
+      return {
+        servico: serviceName,
+        prazo: s?.prazo || s?.prazoEntrega || s?.deadline || null,
+        valor: applyTaxa(serviceName, base),
+        origem: cepOrigem,
+        destino: cepDestino
+      };
+    }).filter(x => x && !Number.isNaN(x.valor));
+
     const tempo = Date.now() - start;
-    console.log(`✅ Cotação concluída | HTTP ${status} | Tempo: ${tempo}ms`);
-    return res.json({ ok: true, tempoRespostaMs: tempo, statusHTTP: status, resultados: massageResultado(data) });
+    return res.json({
+      ok: true,
+      tempoRespostaMs: tempo,
+      statusHTTP: status,
+      resultados
+    });
+
   } catch (err) {
     const tempo = Date.now() - start;
-    console.error('❌ Erro:', err.message);
-    return res.status(500).json({ ok: false, error: err.message, tempoRespostaMs: tempo });
+    const code = err.status || err.response?.status || 500;
+    const msg = err.message || 'Erro interno';
+    console.error('❌ /cotacao', code, msg);
+    return res.status(code).json({ ok: false, error: msg, tempoRespostaMs: tempo });
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+app.listen(PORT, () => {
+  console.log(`🚀 FreteBot v5.0 rodando na porta ${PORT}`);
+});
