@@ -1,171 +1,59 @@
-import 'dotenv/config';
-import express from 'express';
-import axios from 'axios';
-import fs from 'fs';
-import cors from 'cors';
-import { readValidToken, saveToken } from './tokenCache.js';
-import { throttle } from './rateLimit.js';
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import compression from "compression";
+import Redis from "ioredis";
+import fetch from "node-fetch";
+import rateLimit from "./rateLimit.js";
+import config from "./config.json" assert { type: "json" };
 
 const app = express();
-
-// ✅ Configuração de CORS (antes de tudo)
-app.use(cors({
-  origin: [
-    'https://freteaz.com.br',
-    'https://www.freteaz.com.br'
-  ],
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: false
-}));
-
-// ✅ Suporte ao pré-flight OPTIONS
-app.options('*', cors());
-
 app.use(express.json());
+app.use(helmet());
+app.use(compression());
+app.use(cors({ origin: ["https://freteaz.com.br", "https://www.freteaz.com.br"], methods: ["POST"] }));
 
-const PORT = 10000;
-const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
-const USUARIO = process.env.POSTAJA_USUARIO;
-const SENHA = process.env.POSTAJA_SENHA;
+const redis = new Redis(process.env.REDIS_URL);
 
-// ✅ Validação mínima da estrutura
-['tokenCache.js', 'rateLimit.js', 'config.json'].forEach(file => {
-  if (!fs.existsSync(file)) {
-    console.error(`❌ Arquivo essencial ausente: ${file}`);
-    process.exit(1);
+// --- Endpoint público otimizado ---
+app.post("/api/public/quote", rateLimit, async (req, res) => {
+  const { cepOrigem, cepDestino, peso } = req.body;
+  if (!cepOrigem || !cepDestino || !peso) {
+    return res.status(400).json({ error: "Parâmetros obrigatórios ausentes." });
   }
-});
 
-// ✅ Carregar config.json
-let config = { taxas: {} };
-try {
-  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
-  console.log('✅ Estrutura validada e config.json carregado.');
-} catch {
-  console.warn('⚠️ config.json inválido ou ausente, usando padrão.');
-}
-
-const SERVICE_MAP = {
-  '03220': { nome: 'Sedex', transportadora: 'Correios', taxa: 'SEDEX' },
-  '03298': { nome: 'PAC', transportadora: 'Correios', taxa: 'PAC' },
-  '04227': { nome: 'Mini Envios', transportadora: 'Correios', taxa: 'Mini Envios' },
-  '.package': { nome: '.package', transportadora: 'Jadlog', taxa: 'Jadlog' }
-};
-const SERVICES = ['03220', '03298', '04227', '.package'];
-
-function normalizeValorDeclarado(v) {
-  let n = Number(v);
-  if (!Number.isFinite(n) || n < 0) n = 0;
-  if (n === 0) n = 10;
-  return n.toFixed(2);
-}
-
-function applyTaxa(servico, valorStr) {
-  const meta = SERVICE_MAP[servico];
-  if (!meta) return valorStr;
-  const taxa = Number(config?.taxas?.[meta.taxa]) || 0;
-  const preco = Number(String(valorStr).replace('.', '').replace(',', '.'));
-  if (!Number.isFinite(preco) || preco <= 0) return valorStr;
-  const final = preco + preco * (taxa / 100);
-  return final.toFixed(2).replace('.', ',');
-}
-
-async function httpLogin() {
-  const cached = readValidToken();
-  if (cached) {
-    console.log('🔐 Token válido reutilizado');
-    return cached;
-  }
-  console.log('🔐 Gerando novo token...');
-  const { data } = await axios.post(`${BACK_BASE}/auth/login`, {
-    usuario: USUARIO,
-    senha: SENHA
-  });
-  saveToken(data.token, 43200);
-  console.log('✅ Novo token salvo em cache');
-  return data.token;
-}
-
-function buildURL(p) {
-  const usp = new URLSearchParams();
-  usp.set('cepOrigem', p.origem);
-  usp.set('cepDestino', p.destino);
-  usp.set('altura', p.altura);
-  usp.set('largura', p.largura);
-  usp.set('comprimento', p.comprimento);
-  usp.set('peso', String(Math.round(Number(p.peso) * 1000)));
-  usp.set('valorDeclarado', normalizeValorDeclarado(p.valorDeclarado));
-  usp.set('codigoServico', '');
-  usp.set('prazo', '0');
-  usp.set('prazoFinal', '0');
-  usp.set('valor', '0');
-  usp.set('quantidade', '1');
-  usp.set('logisticaReversa', 'false');
-  usp.set('tipoEmbalagem', '1');
-  usp.set('tipo', '2');
-  SERVICES.forEach(s => usp.append('servicos[]', s));
-  return `${BACK_BASE}/preco-prazo?${usp}`;
-}
-
-function massageResultado(raw) {
-  const out = [];
-  for (const it of raw || []) {
-    const s = it?.coProduto || it?.servico;
-    if (!SERVICE_MAP[s]) continue;
-    let valor = it?.pcFinal ?? it?.valor ?? '0,00';
-    if (typeof valor === 'number') valor = valor.toFixed(2).replace('.', ',');
-    let prazo = Number(it?.prazoEntrega ?? it?.prazo ?? 0);
-    let txErro = false;
-    if (!valor || valor === '0,00' || valor === '0') {
-      valor = s === '04227'
-        ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
-        : 'Área de CEP de destino não atendida.';
-      txErro = true;
-    } else {
-      valor = applyTaxa(s, valor);
-    }
-    out.push({
-      transportadora: SERVICE_MAP[s].transportadora,
-      servico: SERVICE_MAP[s].nome,
-      valor,
-      prazo,
-      txErro
-    });
-  }
-  for (const s of SERVICES) {
-    if (!out.find(o => o.servico === SERVICE_MAP[s].nome)) {
-      out.push({
-        transportadora: SERVICE_MAP[s].transportadora,
-        servico: SERVICE_MAP[s].nome,
-        valor: s === '04227'
-          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
-          : 'Área de CEP de destino não atendida.',
-        prazo: 0,
-        txErro: true
-      });
-    }
-  }
-  return out;
-}
-
-// ✅ Rota principal de cotação
-app.post('/cotacao', async (req, res) => {
-  const start = Date.now();
+  const cacheKey = `quote:${cepOrigem}:${cepDestino}:${peso}`;
   try {
-    await throttle();
-    console.log('🚚 Iniciando cotação...');
-    const token = await httpLogin();
-    const url = buildURL(req.body || {});
-    const { data, status } = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
-    const tempo = Date.now() - start;
-    console.log(`✅ Cotação concluída | HTTP ${status} | Tempo: ${tempo}ms`);
-    return res.json({ ok: true, tempoRespostaMs: tempo, statusHTTP: status, resultados: massageResultado(data) });
+    const cached = await redis.get(cacheKey);
+    if (cached) {
+      console.log("🟢 Cache HIT:", cacheKey);
+      return res.json(JSON.parse(cached));
+    }
+
+    const response = await fetch(`${process.env.BACK_BASE}/api/cotacao`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cepOrigem, cepDestino, peso }),
+    });
+
+    const data = await response.json();
+    const safeData = Array.isArray(data)
+      ? data.map(r => ({ servico: r.servico, prazo: r.prazo, valor: r.valor_frete }))
+      : [];
+
+    await redis.set(cacheKey, JSON.stringify(safeData), "EX", 300);
+    console.log("🟡 Cache SET:", cacheKey);
+    res.json(safeData);
   } catch (err) {
-    const tempo = Date.now() - start;
-    console.error('❌ Erro:', err.message);
-    return res.status(500).json({ ok: false, error: err.message, tempoRespostaMs: tempo });
+    console.error("❌ Erro ao consultar frete:", err.message);
+    res.status(500).json({ error: "Falha na consulta de frete." });
   }
 });
 
-app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
+// --- Healthcheck ---
+app.get("/health", (req, res) => {
+  res.status(200).send("OK");
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Servidor FreteAZ ativo na porta ${PORT}`));
