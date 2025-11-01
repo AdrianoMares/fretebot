@@ -1,25 +1,30 @@
-# 🚀 FreteAZ Secure API (Render Version)
 
-Esta é a versão otimizada do servidor com:
-- Redis cache (5 minutos por cotação)
-- Rate-limit (20 req/min por IP)
-- CORS restrito
-- Helmet + Compression
-- Endpoint público `/api/public/quote`
+# FreteBot v5.0
 
-## Deploy
+Servidor Node (Render) que:
+- Faz **login no Posta Já** e guarda o token em cache (arquivo local ou **Redis** se disponível);
+- Expõe **/cotacao** para cotações em tempo real;
+- **Aplica margens** conforme `config.json` (`taxes` multiplicador ou `taxas` em %);
+- Usa **rate limit** e **cache de resposta** em Redis (opcional).
 
-1. Substitua `index.js`, `rateLimit.js`, e `package.json` no seu repositório do GitHub.
-2. Faça commit e push:
-   ```bash
-   git add .
-   git commit -m "update: segurança e cache redis"
-   git push
-   ```
-3. O Render fará o deploy automaticamente.
+## Variáveis de Ambiente (.env)
+```
+PORT=10000
+BACK_BASE=https://back.clubepostaja.com.br
+POSTAJA_USUARIO=seu_usuario
+POSTAJA_SENHA=sua_senha
 
-## Teste
+# Opcional (enable cache Redis)
+REDIS_URL=rediss://:senha@host:port
+REDIS_PREFIX=fretebot:
+REDIS_TTL_SECONDS=300
+```
 
-- Público: `POST https://fretebot.onrender.com/api/public/quote`
-- Privado: `POST https://fretebot.onrender.com/cotacao`
-- Health: `GET https://fretebot.onrender.com/health`
+## Rotas
+- `POST /cotacao` — body: { cepOrigem, cepDestino, peso, valor, largura, altura, comprimento }
+  - Response: serviços com prazo e **preço final com taxa aplicada** (sem expor margens).
+
+## Deploy no Render
+1. Faça push destes arquivos no GitHub.
+2. Configure as variáveis de ambiente (Settings → Environment).
+3. Build & Deploy.
