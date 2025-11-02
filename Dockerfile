@@ -1,11 +1,7 @@
-FROM node:22-alpine
-
+FROM node:20-alpine
 WORKDIR /app
-COPY package*.json ./
-RUN npm install
+COPY package.json ./
+RUN npm ci --omit=dev
 COPY . .
-
-ENV PORT=10000
-
 EXPOSE 10000
-CMD ["npm", "start"]
+CMD ["node","index.js"]

@@ -1,166 +1,243 @@
-
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import compression from 'compression';
 import axios from 'axios';
+import fs from 'fs';
 import crypto from 'crypto';
+import helmet from 'helmet';
+import cors from 'cors';
 import Redis from 'ioredis';
-import { throttle, ipRateLimit } from './rateLimit.js';
+
 import { readValidToken, saveToken } from './tokenCache.js';
-import config from './config.json' assert { type: 'json' };
+import { throttle } from './rateLimit.js';
 
 const app = express();
-app.use(express.json({ limit: '256kb' }));
-app.use(helmet());
-app.use(compression());
-app.use(cors({ origin: ['https://freteaz.com.br','https://www.freteaz.com.br'], methods: ['POST','OPTIONS'] }));
-app.use(ipRateLimit({ windowMs: 60_000, max: 120 })); // 120 req/min/IP
+app.disable('x-powered-by');
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cors({ origin: '*' }));
+app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 const BACK_BASE = process.env.BACK_BASE || 'https://back.clubepostaja.com.br';
 const USUARIO = process.env.POSTAJA_USUARIO;
 const SENHA = process.env.POSTAJA_SENHA;
+const API_KEY = process.env.API_KEY || '';
+const REDIS_URL = process.env.REDIS_URL || '';
+const REDIS_PREFIX = process.env.REDIS_PREFIX || 'cotacao:';
+const REDIS_TTL_SECONDS = parseInt(process.env.REDIS_TTL_SECONDS || '300', 10);
+const RATE_MIN_INTERVAL_MS = parseInt(process.env.RATE_MIN_INTERVAL_MS || '250', 10);
 
-// --- Redis (opcional) para cache de resposta ---
-const redisUrl = process.env.REDIS_URL;
-const redisPrefix = process.env.REDIS_PREFIX || 'fretebot:';
-const REDIS_TTL = parseInt(process.env.REDIS_TTL_SECONDS || '300', 10);
 let redis = null;
-if (redisUrl) {
-  redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1 });
-  redis.on('error', (e) => console.error('Redis error:', e.message));
-  try { await redis.connect(); } catch {}
-}
-
-// --- Util: normaliza e gera chave para cache ---
-function cacheKeyFrom(req) {
-  const body = JSON.stringify(req.body || {});
-  const hash = crypto.createHash('sha1').update(body).digest('hex');
-  return `${redisPrefix}quote:${hash}`;
-}
-
-// --- Aplica taxa de margem ---
-// Suporta config.taxes (multiplicador) OU config.taxas (percentual)
-function applyTaxa(serviceName, base) {
-  const key = serviceName;
-  const mult = config?.taxes?.[key];
-  const perc = config?.taxas?.[key];
-  let final = base;
-  if (typeof mult === 'number') {
-    final = base * mult;
-  } else if (typeof perc === 'number') {
-    final = base * (1 + (perc / 100));
+if (REDIS_URL) {
+  try {
+    redis = new Redis(REDIS_URL, { lazyConnect: true, maxRetriesPerRequest: 2 });
+    await redis.connect();
+    console.log('✅ Redis conectado');
+  } catch (e) {
+    console.warn('⚠️ Falha ao conectar no Redis, prosseguindo sem cache:', e.message);
+    redis = null;
   }
-  return Math.round(final * 100) / 100;
 }
 
-function mapService(codeOrName) {
-  const map = config?.SERVICE_MAP || {};
-  return map[codeOrName] || codeOrName;
+['tokenCache.js', 'rateLimit.js', 'config.json'].forEach(file => {
+  if (!fs.existsSync(file)) {
+    console.error(`❌ Arquivo essencial ausente: ${file}`);
+    process.exit(1);
+  }
+});
+
+let config = { taxas: {} };
+try {
+  config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
+  console.log('✅ config.json carregado.');
+} catch {
+  console.warn('⚠️ config.json inválido ou ausente, usando padrão.');
 }
 
-// --- Login + token cache ---
+const SERVICE_MAP = {
+  '03220': { nome: 'Sedex', transportadora: 'Correios', taxa: 'SEDEX' },
+  '03298': { nome: 'PAC', transportadora: 'Correios', taxa: 'PAC' },
+  '04227': { nome: 'Mini Envios', transportadora: 'Correios', taxa: 'Mini Envios' },
+  '.package': { nome: '.package', transportadora: 'Jadlog', taxa: 'Jadlog' }
+};
+const SERVICES = ['03220', '03298', '04227', '.package'];
+
+const wait = (ms)=> new Promise(r=>setTimeout(r, ms));
+
+function normalizeValorDeclarado(v) {
+  let n = Number(v);
+  if (!Number.isFinite(n) || n < 0) n = 0;
+  if (n === 0) n = 10;
+  return n.toFixed(2);
+}
+
+function applyTaxa(servico, valorStr) {
+  const meta = SERVICE_MAP[servico];
+  if (!meta) return valorStr;
+  const taxa = Number(config?.taxas?.[meta.taxa]) || 0;
+  const preco = Number(String(valorStr).replace('.', '').replace(',', '.'));
+  if (!Number.isFinite(preco) || preco <= 0) return valorStr;
+  const final = preco + preco * (taxa / 100);
+  return final.toFixed(2).replace('.', ',');
+}
+
 async function httpLogin() {
-  // tenta token válido
-  const cached = await readValidToken();
+  const cached = readValidToken();
   if (cached) return cached;
-
-  // realiza login
   const { data } = await axios.post(`${BACK_BASE}/auth/login`, {
-    usuario: USUARIO, senha: SENHA
-  }, { timeout: 15000 });
-  if (!data?.token || !data?.expires_in) {
-    throw new Error('Login sem token válido');
-  }
-  await saveToken(data.token, data.expires_in);
+    usuario: USUARIO,
+    senha: SENHA
+  });
+  saveToken(data.token, 43200);
   return data.token;
 }
 
-// --- Middleware de cache de resposta ---
-async function responseCache(req, res, next) {
-  if (!redis) return next();
-  const key = cacheKeyFrom(req);
-  try {
-    const cached = await redis.get(key);
-    if (cached) {
-      return res.json(JSON.parse(cached));
+function buildURL(p) {
+  const usp = new URLSearchParams();
+  usp.set('cepOrigem', p.origem);
+  usp.set('cepDestino', p.destino);
+  usp.set('altura', p.altura);
+  usp.set('largura', p.largura);
+  usp.set('comprimento', p.comprimento);
+  usp.set('peso', String(Math.round(Number(p.peso) * 1000)));
+  usp.set('valorDeclarado', normalizeValorDeclarado(p.valorDeclarado));
+  usp.set('codigoServico', '');
+  usp.set('prazo', '0');
+  usp.set('prazoFinal', '0');
+  usp.set('valor', '0');
+  usp.set('quantidade', '1');
+  usp.set('logisticaReversa', 'false');
+  usp.set('tipoEmbalagem', '1');
+  usp.set('tipo', '2');
+  SERVICES.forEach(s => usp.append('servicos[]', s));
+  return `${BACK_BASE}/preco-prazo?${usp}`;
+}
+
+function massageResultado(raw) {
+  const out = [];
+  for (const it of raw || []) {
+    const s = it?.coProduto || it?.servico;
+    if (!SERVICE_MAP[s]) continue;
+    let valor = it?.pcFinal ?? it?.valor ?? '0,00';
+    if (typeof valor === 'number') valor = valor.toFixed(2).replace('.', ',');
+    let prazo = Number(it?.prazoEntrega ?? it?.prazo ?? 0);
+    let txErro = false;
+    if (!valor || valor === '0,00' || valor === '0') {
+      valor = s === '04227'
+        ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
+        : 'Área de CEP de destino não atendida.';
+      txErro = true;
+    } else {
+      valor = applyTaxa(s, valor);
     }
-  } catch {}
-  // intercepta res.json para salvar
-  const originalJson = res.json.bind(res);
-  res.json = async (payload) => {
-    try {
-      await redis.setex(key, REDIS_TTL, JSON.stringify(payload));
-    } catch {}
-    return originalJson(payload);
-  };
-  next();
-}
-
-// --- Validação mínima do corpo ---
-function validateBody(body) {
-  const required = ['cepOrigem','cepDestino','peso'];
-  const missing = required.filter(k => !body?.[k]);
-  if (missing.length) {
-    const err = new Error('Parâmetros obrigatórios ausentes: ' + missing.join(', '));
-    err.status = 400;
-    throw err;
+    out.push({
+      transportadora: SERVICE_MAP[s].transportadora,
+      servico: SERVICE_MAP[s].nome,
+      valor,
+      prazo,
+      txErro
+    });
   }
+  for (const s of SERVICES) {
+    if (!out.find(o => o.servico === SERVICE_MAP[s].nome)) {
+      out.push({
+        transportadora: SERVICE_MAP[s].transportadora,
+        servico: SERVICE_MAP[s].nome,
+        valor: s === '04227'
+          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
+          : 'Área de CEP de destino não atendida.',
+        prazo: 0,
+        txErro: true
+      });
+    }
+  }
+  return out;
 }
 
-// --- Handler principal ---
-app.post('/cotacao', responseCache, async (req, res) => {
-  const start = Date.now();
+function hashParams(body) {
+  const sorted = Object.keys(body || {}).sort().reduce((acc, k)=>{acc[k]=body[k];return acc;},{});
+  return crypto.createHash('sha256').update(JSON.stringify(sorted)).digest('hex');
+}
+
+async function getCotacao(body) {
+  await throttle(RATE_MIN_INTERVAL_MS);
+  const token = await httpLogin();
+  const url = buildURL(body || {});
+  const { data } = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+  return massageResultado(data);
+}
+
+function requireApiKey(req, res, next) {
+  const key = req.headers['x-api-key'] || '';
+  if (!API_KEY || key !== API_KEY) {
+    return res.status(401).json({ ok: false, error: 'Não autorizado. Use sua API Key.' });
+  }
+  return next();
+}
+
+async function rlPublic(req, res, next) {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString();
+  const key = `rl:pub:${ip}`;
   try {
-    validateBody(req.body);
-    await throttle();
-
-    const token = await httpLogin();
-
-    // Monta requisição para o Posta Já (ajuste o caminho se necessário)
-    const { cepOrigem, cepDestino, peso, valor, largura, altura, comprimento } = req.body;
-    const payload = { cepOrigem, cepDestino, peso, valor, largura, altura, comprimento };
-
-    const { data, status } = await axios.post(`${BACK_BASE}/api/cotacao`, payload, {
-      headers: { Authorization: `Bearer ${token}` },
-      timeout: 20000,
-    });
-
-    // Transforma a resposta e aplica margens
-    const itens = Array.isArray(data) ? data : (data?.itens || data?.servicos || []);
-    const resultados = itens.map((s) => {
-      const serviceName = mapService(s?.code || s?.service_code || s?.servico || s?.nome);
-      const base = Number(s?.valor || s?.valorFrete || s?.preco || s?.price || 0);
-      return {
-        servico: serviceName,
-        prazo: s?.prazo || s?.prazoEntrega || s?.deadline || null,
-        valor: applyTaxa(serviceName, base),
-        origem: cepOrigem,
-        destino: cepDestino
-      };
-    }).filter(x => x && !Number.isNaN(x.valor));
-
-    const tempo = Date.now() - start;
-    return res.json({
-      ok: true,
-      tempoRespostaMs: tempo,
-      statusHTTP: status,
-      resultados
-    });
-
-  } catch (err) {
-    const tempo = Date.now() - start;
-    const code = err.status || err.response?.status || 500;
-    const msg = err.message || 'Erro interno';
-    console.error('❌ /cotacao', code, msg);
-    return res.status(code).json({ ok: false, error: msg, tempoRespostaMs: tempo });
+    if (redis) {
+      const count = await redis.incr(key);
+      if (count === 1) await redis.expire(key, 60);
+      if (count > 3) {
+        return res.status(429).json({
+          ok: false,
+          error: 'Limite público atingido (3/min). Autentique-se para continuar.'
+        });
+      }
+    } else {
+      if (!global.__PUB_RL) global.__PUB_RL = new Map();
+      const now = Date.now();
+      const rec = global.__PUB_RL.get(ip) || { count: 0, ts: now };
+      if (now - rec.ts > 60000) { rec.count = 0; rec.ts = now; }
+      rec.count += 1;
+      global.__PUB_RL.set(ip, rec);
+      if (rec.count > 3) {
+        return res.status(429).json({
+          ok: false,
+          error: 'Limite público atingido (3/min). Autentique-se para continuar.'
+        });
+      }
+    }
+    next();
+  } catch (e) {
+    console.warn('rate-limit público falhou:', e.message);
+    next();
   }
-});
+}
 
-app.get('/health', (req, res) => res.json({ ok: true }));
+async function handleCotacao(req, res, isPublic=false) {
+  const started = Date.now();
+  try {
+    const body = req.body || {};
+    const cacheKey = `${REDIS_PREFIX}${hashParams(body)}`;
+    if (redis) {
+      const cached = await redis.get(cacheKey);
+      if (cached) {
+        const tempo = Date.now() - started;
+        return res.json({
+          ok: true,
+          cache: true,
+          tempoRespostaMs: tempo,
+          resultados: JSON.parse(cached)
+        });
+      }
+    }
+    const resultados = await getCotacao(body);
+    if (redis) await redis.set(cacheKey, JSON.stringify(resultados), 'EX', REDIS_TTL_SECONDS);
+    const tempo = Date.now() - started;
+    return res.json({ ok: true, cache: false, tempoRespostaMs: tempo, resultados });
+  } catch (err) {
+    const tempo = Date.now() - started;
+    console.error('❌ Erro cotação:', err.message);
+    return res.status(500).json({ ok: false, error: err.message, tempoRespostaMs: tempo });
+  }
+}
 
-app.listen(PORT, () => {
-  console.log(`🚀 FreteBot v5.0 rodando na porta ${PORT}`);
-});
+app.post('/api/cotacao', requireApiKey, async (req, res) => { await handleCotacao(req, res, false); });
+app.post('/api/public/cotacao', rlPublic, async (req, res) => { await handleCotacao(req, res, true); });
+app.get('/healthz', (_, res) => res.json({ ok: true }));
+
+app.listen(PORT, () => console.log(`🚀 Servidor rodando na porta ${PORT}`));
