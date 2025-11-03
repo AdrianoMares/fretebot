@@ -1,8 +1,8 @@
 {
   "taxas": {
-    "SEDEX": 0,
-    "PAC": 0,
-    "Mini Envios": 0,
-    "Jadlog": 0
+    "SEDEX": 10.5,
+    "PAC": 10.5,
+    "Mini Envios": 10.5,
+    "Jadlog": 70
   }
 }
