@@ -60,6 +60,8 @@ const SERVICE_MAP = {
   '.package': { nome: '.package', transportadora: 'Jadlog', taxa: 'Jadlog' }
 };
 const SERVICES = ['03220', '03298', '04227', '.package'];
+const MINI_ENVIOS_CODE = '04227';
+const MINI_ENVIOS_MAX_DECLARED_VALUE = 100;
 
 function normalizeValorDeclarado(v) {
   let n = Number(v);
@@ -102,6 +104,10 @@ function applyTaxa(servico, valorStr) {
   return formatNumberToMoneyBr(final);
 }
 
+function isMiniEnviosBlocked(valorDeclarado) {
+  return parseMoneyToNumber(valorDeclarado) > MINI_ENVIOS_MAX_DECLARED_VALUE;
+}
+
 async function httpLogin() {
   const cached = readValidToken();
   if (cached) return cached;
@@ -137,6 +143,7 @@ function buildURL(p) {
 function massageResultado(raw, valorDeclarado) {
   const out = [];
   const valorSeguro = calcularValorSeguro(valorDeclarado);
+  const miniEnviosBlocked = isMiniEnviosBlocked(valorDeclarado);
 
   for (const it of raw || []) {
     const s = it?.coProduto || it?.servico;
@@ -152,8 +159,12 @@ function massageResultado(raw, valorDeclarado) {
     let valor = valorBase;
     let valorFrete = valorBase;
 
-    if (!valorBase || valorBase === '0,00' || valorBase === '0') {
-      valor = s === '04227'
+    if (s === MINI_ENVIOS_CODE && miniEnviosBlocked) {
+      valor = 'Valor declarado excede o limite do Mini Envios.';
+      valorFrete = valor;
+      txErro = true;
+    } else if (!valorBase || valorBase === '0,00' || valorBase === '0') {
+      valor = s === MINI_ENVIOS_CODE
         ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
         : 'Área de CEP de destino não atendida.';
       valorFrete = valor;
@@ -181,16 +192,20 @@ function massageResultado(raw, valorDeclarado) {
 
   for (const s of SERVICES) {
     if (!out.find(o => o.servico === SERVICE_MAP[s].nome)) {
+      const miniEnviosErrorMessage = miniEnviosBlocked
+        ? 'Valor declarado excede o limite do Mini Envios.'
+        : 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.';
+
       out.push({
         transportadora: SERVICE_MAP[s].transportadora,
         servico: SERVICE_MAP[s].nome,
-        valor: s === '04227'
-          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
+        valor: s === MINI_ENVIOS_CODE
+          ? miniEnviosErrorMessage
           : 'Área de CEP de destino não atendida.',
         prazo: 0,
         txErro: true,
-        valorFrete: s === '04227'
-          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
+        valorFrete: s === MINI_ENVIOS_CODE
+          ? miniEnviosErrorMessage
           : 'Área de CEP de destino não atendida.',
         valorSeguro: '0,00',
         valorDeclarado: normalizeValorDeclarado(valorDeclarado)
