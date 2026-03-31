@@ -4,5 +4,8 @@
     "PAC": 10.5,
     "Mini Envios": 10.5,
     "Jadlog": 70
+  },
+  "seguro": {
+    "percentual": 0.88
   }
 }

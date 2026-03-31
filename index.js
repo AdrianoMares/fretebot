@@ -45,7 +45,7 @@ if (REDIS_URL) {
   }
 });
 
-let config = { taxas: {} };
+let config = { taxas: {}, seguro: { percentual: 0 } };
 try {
   config = JSON.parse(fs.readFileSync('config.json', 'utf-8'));
   console.log('✅ config.json carregado.');
@@ -61,8 +61,6 @@ const SERVICE_MAP = {
 };
 const SERVICES = ['03220', '03298', '04227', '.package'];
 
-const wait = (ms)=> new Promise(r=>setTimeout(r, ms));
-
 function normalizeValorDeclarado(v) {
   let n = Number(v);
   if (!Number.isFinite(n) || n < 0) n = 0;
@@ -70,14 +68,38 @@ function normalizeValorDeclarado(v) {
   return n.toFixed(2);
 }
 
+function parseMoneyToNumber(valor) {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? valor : 0;
+  const num = Number(String(valor ?? '0').replace(/\./g, '').replace(',', '.'));
+  return Number.isFinite(num) ? num : 0;
+}
+
+function formatNumberToMoneyBr(valor) {
+  const num = Number(valor);
+  if (!Number.isFinite(num) || num <= 0) return '0,00';
+  return num.toFixed(2).replace('.', ',');
+}
+
+function getSeguroPercentual() {
+  const percentual = Number(config?.seguro?.percentual) || 0;
+  return percentual > 0 ? percentual : 0;
+}
+
+function calcularValorSeguro(valorDeclarado) {
+  const declarado = Number(valorDeclarado) || 0;
+  const percentual = getSeguroPercentual();
+  if (!Number.isFinite(declarado) || declarado <= 0 || percentual <= 0) return 0;
+  return declarado * (percentual / 100);
+}
+
 function applyTaxa(servico, valorStr) {
   const meta = SERVICE_MAP[servico];
   if (!meta) return valorStr;
   const taxa = Number(config?.taxas?.[meta.taxa]) || 0;
-  const preco = Number(String(valorStr).replace('.', '').replace(',', '.'));
+  const preco = parseMoneyToNumber(valorStr);
   if (!Number.isFinite(preco) || preco <= 0) return valorStr;
   const final = preco + preco * (taxa / 100);
-  return final.toFixed(2).replace('.', ',');
+  return formatNumberToMoneyBr(final);
 }
 
 async function httpLogin() {
@@ -112,31 +134,51 @@ function buildURL(p) {
   return `${BACK_BASE}/preco-prazo?${usp}`;
 }
 
-function massageResultado(raw) {
+function massageResultado(raw, valorDeclarado) {
   const out = [];
+  const valorSeguro = calcularValorSeguro(valorDeclarado);
+
   for (const it of raw || []) {
     const s = it?.coProduto || it?.servico;
     if (!SERVICE_MAP[s]) continue;
-    let valor = it?.pcFinal ?? it?.valor ?? '0,00';
-    if (typeof valor === 'number') valor = valor.toFixed(2).replace('.', ',');
+
+    let valorBase = it?.pcFinal ?? it?.valor ?? '0,00';
+    if (typeof valorBase === 'number') {
+      valorBase = formatNumberToMoneyBr(valorBase);
+    }
+
     let prazo = Number(it?.prazoEntrega ?? it?.prazo ?? 0);
     let txErro = false;
-    if (!valor || valor === '0,00' || valor === '0') {
+    let valor = valorBase;
+    let valorFrete = valorBase;
+
+    if (!valorBase || valorBase === '0,00' || valorBase === '0') {
       valor = s === '04227'
         ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
         : 'Área de CEP de destino não atendida.';
+      valorFrete = valor;
       txErro = true;
     } else {
-      valor = applyTaxa(s, valor);
+      const freteComMarkupStr = applyTaxa(s, valorBase);
+      const freteComMarkup = parseMoneyToNumber(freteComMarkupStr);
+      const valorFinal = freteComMarkup + valorSeguro;
+
+      valorFrete = freteComMarkupStr;
+      valor = formatNumberToMoneyBr(valorFinal);
     }
+
     out.push({
       transportadora: SERVICE_MAP[s].transportadora,
       servico: SERVICE_MAP[s].nome,
       valor,
       prazo,
-      txErro
+      txErro,
+      valorFrete,
+      valorSeguro: txErro ? '0,00' : formatNumberToMoneyBr(valorSeguro),
+      valorDeclarado: normalizeValorDeclarado(valorDeclarado)
     });
   }
+
   for (const s of SERVICES) {
     if (!out.find(o => o.servico === SERVICE_MAP[s].nome)) {
       out.push({
@@ -146,7 +188,12 @@ function massageResultado(raw) {
           ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
           : 'Área de CEP de destino não atendida.',
         prazo: 0,
-        txErro: true
+        txErro: true,
+        valorFrete: s === '04227'
+          ? 'Peso/Valor excede o limite de aceitacao do servico no ambito nacional.'
+          : 'Área de CEP de destino não atendida.',
+        valorSeguro: '0,00',
+        valorDeclarado: normalizeValorDeclarado(valorDeclarado)
       });
     }
   }
@@ -163,7 +210,7 @@ async function getCotacao(body) {
   const token = await httpLogin();
   const url = buildURL(body || {});
   const { data } = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
-  return massageResultado(data);
+  return massageResultado(data, body?.valorDeclarado);
 }
 
 function requireApiKey(req, res, next) {
