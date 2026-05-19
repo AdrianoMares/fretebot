@@ -140,6 +140,22 @@ function buildURL(p) {
   return `${BACK_BASE}/preco-prazo?${usp}`;
 }
 
+function ajustarPrazoEntrega(servico, prazoOriginal) {
+  const prazo = Number(prazoOriginal ?? 0);
+
+  if (!Number.isFinite(prazo) || prazo <= 0) {
+    return prazo;
+  }
+
+  const meta = SERVICE_MAP[servico];
+
+  if (meta?.transportadora === 'Jadlog') {
+    return prazo + 1;
+  }
+
+  return prazo;
+}
+
 function massageResultado(raw, valorDeclarado) {
   const out = [];
   const valorSeguro = calcularValorSeguro(valorDeclarado);
@@ -154,7 +170,7 @@ function massageResultado(raw, valorDeclarado) {
       valorBase = formatNumberToMoneyBr(valorBase);
     }
 
-    let prazo = Number(it?.prazoEntrega ?? it?.prazo ?? 0);
+    let prazo = ajustarPrazoEntrega(s, it?.prazoEntrega ?? it?.prazo ?? 0);
     let txErro = false;
     let valor = valorBase;
     let valorFrete = valorBase;
